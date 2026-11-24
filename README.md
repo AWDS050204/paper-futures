@@ -166,16 +166,17 @@
 
 ## 自己部署
 
-纯静态站点，两个文件：
+纯静态站点，三个文件：
 
 ```
 index.html
 lightweight-charts.js
+i18n.js
 ```
 
 放到 GitHub Pages / Cloudflare Pages / Vercel 都行，**不需要 Node、不需要后端、不需要数据库**。
 
-**发给朋友**：把这两个文件压成 zip 发过去，解压后双击 `index.html`。
+**发给朋友**：把这三个文件压成 zip 发过去，解压后双击 `index.html`。
 （`file://` 协议下浏览器能正常取币安行情，已实测。）
 
 前提只有一个：**网络能访问 `fapi.binance.com`**。国内部分网络需要代理。
