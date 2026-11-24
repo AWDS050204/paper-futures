@@ -20,8 +20,9 @@
 
 ### 方式 A：单文件版（推荐发给别人）
 
-1. 下载仓库里的 `index-standalone.html`（222 KB）
-   - 在 GitHub 页面点这个文件 → 右上角 **Download raw file**（下载图标）
+1. 下载这个文件：
+   **https://github.com/AWDS050204/paper-futures/raw/main/index-standalone.html**
+   （或在仓库页点开 `index-standalone.html` → 右上角下载图标）
 2. 双击打开
 
 **就这两步。** 图表库已经内联在里面了，不需要别的文件。
