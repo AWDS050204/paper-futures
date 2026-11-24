@@ -222,13 +222,351 @@
 
 <script>
 'use strict';
+// >>> CORE:BEGIN（由 tools/sync-core.mjs 从 core/core.mjs 生成，勿手改）>>>
+const Core = (() => {
+// Paper Futures · 共用核心逻辑（唯一来源）
+// 网页版 site/index.html 和 DSH 插件版都从这里取，禁止各写一套。
+// 纯函数，不碰 DOM、不碰 localStorage、不碰网络。
+
+const LEV_MAX = 20;
+const MMR = 0.004;              // 维持保证金率
+const MAX_HOLD_MS = 10 * 86400000; // v4 最长持有 10 天
+const HISTORY_MAX = 200;
+
+// ---------------- 指标 ----------------
+const ema = (a, n) => {
+  const o = []; const k = 2 / (n + 1); let p = a[0];
+  for (const x of a) { p = x * k + p * (1 - k); o.push(p); }
+  return o;
+};
+
+function atrArr(ks, n = 14) {
+  const tr = ks.map((x, i) => i === 0
+    ? x.high - x.low
+    : Math.max(x.high - x.low, Math.abs(x.high - ks[i - 1].close), Math.abs(x.low - ks[i - 1].close)));
+  if (tr.length < n) return [];
+  const o = []; let a = tr.slice(0, n).reduce((x, y) => x + y, 0) / n; o[n - 1] = a;
+  for (let i = n; i < tr.length; i++) { a = (a * (n - 1) + tr[i]) / n; o[i] = a; }
+  return o;
+}
+
+function rsiArr(a, n = 14) {
+  const o = new Array(a.length).fill(null); let g = 0, l = 0;
+  for (let i = 1; i < a.length; i++) {
+    const d = a[i] - a[i - 1], gg = Math.max(d, 0), ll = Math.max(-d, 0);
+    if (i <= n) { g += gg; l += ll; if (i === n) { g /= n; l /= n; o[i] = 100 - 100 / (1 + g / (l || 1e-12)); } }
+    else { g = (g * (n - 1) + gg) / n; l = (l * (n - 1) + ll) / n; o[i] = 100 - 100 / (1 + g / (l || 1e-12)); }
+  }
+  return o;
+}
+
+function macdArr(a, f = 12, s = 26, sig = 9) {
+  const ef = ema(a, f), es = ema(a, s);
+  const line = a.map((_, i) => ef[i] - es[i]);
+  const signal = ema(line, sig);
+  return { line, signal, hist: line.map((v, i) => v - signal[i]) };
+}
+
+// 注意：返回数组与 K 线等长（首位 null）。调用方直接用 ad[i] 取第 i 根。
+function adxArr(ks, n = 14) {
+  const tr = [], pdm = [], ndm = [];
+  for (let i = 1; i < ks.length; i++) {
+    const up = ks[i].high - ks[i - 1].high, dn = ks[i - 1].low - ks[i].low;
+    pdm.push(up > dn && up > 0 ? up : 0);
+    ndm.push(dn > up && dn > 0 ? dn : 0);
+    tr.push(Math.max(ks[i].high - ks[i].low, Math.abs(ks[i].high - ks[i - 1].close), Math.abs(ks[i].low - ks[i - 1].close)));
+  }
+  if (tr.length < n * 3) return new Array(ks.length).fill(null); // 数据不足也守住"与 K 线等长"的约定
+  const sm = (arr) => {
+    const o = []; let s = arr.slice(0, n).reduce((x, y) => x + y, 0); o[n - 1] = s;
+    for (let i = n; i < arr.length; i++) { s = s - s / n + arr[i]; o[i] = s; }
+    return o;
+  };
+  const T = sm(tr), P = sm(pdm), N = sm(ndm);
+  const dx = [];
+  for (let i = 0; i < T.length; i++) {
+    if (T[i] == null) continue;
+    const p = (P[i] / T[i]) * 100, m = (N[i] / T[i]) * 100;
+    dx[i] = (Math.abs(p - m) / (p + m || 1)) * 100;
+  }
+  const o = []; let a = dx.slice(n * 2 - 1, n * 3 - 1).reduce((x, z) => x + z, 0) / n; o[n * 3 - 2] = a;
+  for (let i = n * 3 - 1; i < dx.length; i++) { a = (a * (n - 1) + dx[i]) / n; o[i] = a; }
+  return [null, ...o]; // 补前导 null，与 K 线等长
+}
+
+// ---------------- v4 判定 ----------------
+// 用「上一根已收盘的日线」判定，不用正在走的那根（盘中会来回翻）。
+function computeV4(ks) {
+  if (!ks || ks.length < 60) return null;
+  const closes = ks.map((k) => k.close);
+  const e50 = ema(closes, 50);
+  const e200 = ema(closes, Math.min(200, Math.max(2, closes.length - 1)));
+  const ad = adxArr(ks, 14), at = atrArr(ks, 14);
+
+  const markers = [];
+  for (let i = 210; i < ks.length - 1; i++) {
+    const a = ad[i], t = at[i];
+    if (a == null || t == null) continue;
+    const atrPct = (t / ks[i].close) * 100;
+    const ok = a > 30 && ks[i].close > e50[i] && ks[i].close > e200[i] && e50[i] > e50[i - 20] && atrPct >= 2 && atrPct <= 6;
+    if (ok) markers.push({ time: ks[i].time });
+  }
+
+  const i = Math.max(1, ks.length - 2);
+  const adx = ad[i], atr = at[i];
+  const atrPct = (atr / ks[i].close) * 100;
+  const conds = [
+    ['ADX>30', adx > 30, adx == null ? '—' : adx.toFixed(1)],
+    ['价>EMA50', ks[i].close > e50[i], e50[i]],
+    ['价>EMA200', ks[i].close > e200[i], e200[i]],
+    ['EMA50↑', e50[i] > e50[i - 20], ''],
+    ['ATR 2–6%', atrPct >= 2 && atrPct <= 6, atrPct.toFixed(2) + '%'],
+  ];
+  return {
+    conds, pass: conds.filter((c) => c[1]).length,
+    adx, atr, atrPct, e50: e50[i], e200: e200[i], close: ks[i].close,
+    markers: markers.slice(-40),
+  };
+}
+
+// ---------------- 账户 ----------------
+// 账户上的 4 个累计字段只增不减。history 会被封顶到 HISTORY_MAX，所以累计数不能再拿 history 求和，
+// 否则交易超过 200 笔后数字会往回缩（B3）。
+function freshState(equity = 1500) {
+  return {
+    account: {
+      equity, start: equity, riskPct: 1, maxPos: 3, feeBps: 5, leverage: 20,
+      feeTotal: 0, realizedTotal: 0, fundingTotal: 0, tradeCount: 0,
+    },
+    positions: [], history: [], orders: [], orderLog: [], seq: 1,
+  };
+}
+
+// 老数据补字段，避免 id 变成 NaN / 数组操作抛异常
+function migrate(s) {
+  const base = freshState();
+  if (!s || typeof s !== 'object') return base;
+  const acc0 = s.account && typeof s.account === 'object' ? s.account : {};
+  s.account = Object.assign(base.account, acc0);
+  for (const k of ['positions', 'history', 'orders', 'orderLog']) {
+    if (!Array.isArray(s[k])) s[k] = [];
+  }
+  const maxId = Math.max(0,
+    ...s.positions.map((p) => +p.id || 0),
+    ...s.history.map((h) => +h.id || 0),
+    ...s.orders.map((o) => +o.id || 0));
+  if (!Number.isFinite(s.seq) || s.seq <= maxId) s.seq = maxId + 1;
+
+  // 老数据没有累计字段：用现有 history 补一次初值（必须在下面裁剪 history 之前）
+  const sum = (key) => +s.history.reduce((a, h) => a + (Number(h[key]) || 0), 0).toFixed(2);
+  if (!Number.isFinite(acc0.feeTotal)) s.account.feeTotal = sum('fee');
+  if (!Number.isFinite(acc0.realizedTotal)) s.account.realizedTotal = sum('pnl');
+  if (!Number.isFinite(acc0.fundingTotal)) s.account.fundingTotal = sum('funding');
+  if (!Number.isFinite(acc0.tradeCount)) s.account.tradeCount = s.history.length;
+
+  if (s.history.length > HISTORY_MAX) s.history.length = HISTORY_MAX;
+  return s;
+}
+
+const pnlOf = (p, px) => (px - p.entry) * p.qty * (p.side === 'long' ? 1 : -1);
+
+// ---------------- 杠杆与强平 ----------------
+// 规则：止损必须先于强平。强平离入场太近时自动下调杠杆。
+function leveragePlan({ side, px, stop, levOverride, account }) {
+  const levRaw = Number.isFinite(levOverride) && levOverride > 0 ? levOverride : (account.leverage || 20);
+  let lev = Math.min(levRaw, LEV_MAX);
+  const liqAt = (l) => (side === 'long' ? px * (1 - 1 / l + MMR) : px * (1 + 1 / l - MMR));
+  const ok = (l) => (side === 'long' ? liqAt(l) <= stop * 0.99 : liqAt(l) >= stop * 1.01);
+  while (!ok(lev) && lev > 1) lev -= 1;
+  return { lev, liqAt, ok, levRaw };
+}
+
+// ---------------- 开仓 ----------------
+// state 会被原地修改。返回 { error } 或 { position, warn }。
+function createPosition(state, { sym, side, px, atr, stopPrice = null, targetR = 3, practice = false, levOverride = null, entrySlipPct = 0, syms = null }) {
+  const A = state.account;
+  if (syms && !syms.includes(sym)) return { error: '不支持的标的' };
+  if (!['long', 'short'].includes(side)) return { error: '参数错误' };
+  if (state.positions.length >= A.maxPos) return { error: `已达最大持仓 ${A.maxPos}` };
+  if (state.positions.some((p) => p.sym === sym)) return { error: `${sym} 已有持仓，同一标的不重复开仓` };
+  if (!Number.isFinite(px) || px <= 0) return { error: `${sym} 暂时取不到价格` };
+  if (!Number.isFinite(atr) || atr <= 0) return { error: 'ATR 数据不足' };
+
+  const dir = side === 'long' ? 1 : -1;
+  const stop = Number.isFinite(stopPrice) && stopPrice > 0 ? stopPrice : px - dir * 1.5 * atr;
+  if (side === 'long' && stop >= px) return { error: `多单止损 ${stop} 必须低于入场 ${px}` };
+  if (side === 'short' && stop <= px) return { error: `空单止损 ${stop} 必须高于入场 ${px}` };
+
+  const riskUsd = (A.equity * A.riskPct) / 100;
+  const dist = Math.abs(px - stop);
+  const qty = Math.floor((riskUsd / dist) * 100000) / 100000;
+  if (!Number.isFinite(qty) || qty <= 0) return { error: '数量过小' };
+
+  const { lev, liqAt, ok, levRaw } = leveragePlan({ side, px, stop, levOverride, account: A });
+  if (!ok(lev)) return { error: `止损 ${stop.toFixed(2)} 离入场太远，任何杠杆下强平都会先于止损` };
+
+  const liq = +liqAt(lev).toFixed(2);
+  const warn = lev < Math.min(levRaw, LEV_MAX)
+    ? `杠杆自动从 ${Math.min(levRaw, LEV_MAX)}x 降到 ${lev}x：原档位强平会先于止损`
+    : (side === 'short' ? 'v4 只做多，此为练习单' : '');
+
+  const p = {
+    id: state.seq++, sym, side, qty,
+    entry: +px.toFixed(2), stop: +stop.toFixed(2),
+    target: +(px + dir * targetR * Math.abs(px - stop)).toFixed(2),
+    leverage: lev, margin: +((qty * px) / lev).toFixed(2), liq,
+    entrySlipPct: +Number(entrySlipPct || 0).toFixed(4),
+    practice: !!practice, openedAt: new Date().toISOString(),
+  };
+  state.positions.push(p);
+  return { position: p, warn, atr };
+}
+
+// ---------------- 资金费 ----------------
+// 持仓期间实际发生的资金费（多头付正费率）。纯函数：费率数据由调用方去币安取，
+// rates 就是 /fapi/v1/fundingRate?symbol=X&limit=300 的原样返回 [{fundingTime, fundingRate}, ...]。
+// 只累加 openedAt 之后、now 之前真正结算过的那几期，每期用当期的费率（B2）。
+// 接口只给最近 limit 期；持仓比最老一期还早时，缺的那段按最老一期的费率估算。
+function fundingFromRates(p, rates, now = Date.now(), limit = 300) {
+  if (!Array.isArray(rates) || !rates.length) return 0;
+  const opened = new Date(p.openedAt).getTime();
+  if (!Number.isFinite(opened)) return 0;
+  const rs = rates
+    .map((r) => ({ t: +r.fundingTime, f: +r.fundingRate }))
+    .filter((r) => Number.isFinite(r.t) && Number.isFinite(r.f))
+    .sort((a, b) => a.t - b.t);
+  if (!rs.length) return 0;
+  let rateSum = 0;
+  for (const r of rs) if (r.t > opened && r.t <= now) rateSum += r.f;
+  if (rates.length >= limit && rs[0].t > opened) rateSum += Math.floor((rs[0].t - opened) / (8 * 3600e3)) * rs[0].f;
+  return +((p.side === 'long' ? 1 : -1) * p.entry * p.qty * rateSum).toFixed(4);
+}
+
+// ---------------- 平仓 ----------------
+// fundingUsd 由调用方给（费率要去外面取）。
+function closePosition(state, id, px, { reason = 'manual', exitSlipPct = 0, fundingUsd = 0 } = {}) {
+  const i = state.positions.findIndex((p) => p.id === id);
+  if (i < 0) return { error: '找不到持仓' };
+  if (!Number.isFinite(px) || px <= 0) return { error: '价格无效，未平仓' };
+  const A = state.account, p = state.positions[i];
+  const gross = pnlOf(p, px);
+  const notional = ((p.entry + px) / 2) * p.qty;
+  const feeBps = A.feeBps == null ? 5 : A.feeBps;
+  const fee = notional * (feeBps / 10000) * 2;
+  const realized = gross - fee - fundingUsd;
+
+  A.equity += realized;
+  const rec = {
+    id: p.id, sym: p.sym, side: p.side, entry: p.entry, exit: +px.toFixed(2), qty: p.qty,
+    pnl: +realized.toFixed(2), gross: +gross.toFixed(2), fee: +fee.toFixed(2), funding: +Number(fundingUsd).toFixed(2),
+    entrySlipPct: p.entrySlipPct, exitSlipPct, reason,
+    openedAt: p.openedAt, closedAt: new Date().toISOString(),
+  };
+  state.history.unshift(rec);
+  // 累计字段：加的是和 history 里存的同一个（已取整）数，这样"累计 = 全部历史之和"始终严格成立。
+  // 必须在封顶裁剪之前累加（B3）。
+  const add = (v, x) => +((Number.isFinite(v) ? v : 0) + x).toFixed(2);
+  A.feeTotal = add(A.feeTotal, rec.fee);
+  A.realizedTotal = add(A.realizedTotal, rec.pnl);
+  A.fundingTotal = add(A.fundingTotal, rec.funding);
+  A.tradeCount = (Number.isFinite(A.tradeCount) ? A.tradeCount : 0) + 1;
+  if (state.history.length > HISTORY_MAX) state.history.length = HISTORY_MAX;
+  state.positions.splice(i, 1);
+  return { pnl: realized, fee, funding: fundingUsd };
+}
+
+// ---------------- 挂单撮合 ----------------
+// 触达即成交，成交价取「不差于挂价」。atrOf(sym) 由调用方提供（要联网取）。
+function tickOrders(state, pxMap, { atrOf, now = Date.now() } = {}) {
+  if (!state.orders.length) return { filled: 0, changed: false };
+  const keep = []; let changed = false; let filled = 0;
+  const logIt = (o, status, note) => {
+    state.orderLog.unshift({ at: new Date(now).toISOString(), sym: o.sym, side: o.side, price: o.price, status, note });
+    if (state.orderLog.length > 30) state.orderLog.length = 30;
+  };
+
+  // 同步版本：atr 已预先算好放进 atrMap；没给的订单留到下一轮
+  for (const o of [...state.orders]) {
+    const cur = pxMap[o.sym];
+    if (!Number.isFinite(cur)) { keep.push(o); continue; }
+    if (o.expiresAt && now > Date.parse(o.expiresAt)) { logIt(o, 'expired', '超过有效期自动撤销'); changed = true; continue; }
+    const hit = o.side === 'long' ? cur <= o.price : cur >= o.price;
+    if (!hit) { keep.push(o); continue; }
+
+    const fillPx = o.side === 'long' ? Math.min(o.price, cur) : Math.max(o.price, cur);
+    const atr = atrOf ? atrOf(o.sym) : null;
+    if (!Number.isFinite(atr) || atr <= 0) { keep.push(o); continue; } // ATR 拿不到就等下一轮
+
+    const r = createPosition(state, {
+      sym: o.sym, side: o.side, px: fillPx, atr,
+      stopPrice: o.stop, targetR: o.targetR, practice: o.practice, levOverride: o.leverage,
+    });
+    if (r.error) logIt(o, 'rejected', r.error);
+    else { logIt(o, 'filled', `成交 ${r.position.entry}，止损 ${r.position.stop}，${r.position.leverage}x`); filled++; }
+    changed = true;
+  }
+  state.orders = keep;
+  return { filled, changed };
+}
+
+// ---------------- 止损/止盈/强平/到期 ----------------
+// 单个持仓此刻该不该被动平仓：返回 { reason, fill } 或 null。强平 > 止损 > 止盈 > 到期。
+// 单独导出，是因为调用方要先知道"哪几个要平"，才能只为它们去取资金费率（取费率要联网，不能每轮都为全部持仓取）。
+function exitCheck(p, cur, now = Date.now()) {
+  if (!Number.isFinite(cur)) return null;
+  const dir = p.side === 'long' ? 1 : -1;
+  if (p.liq && ((dir > 0 && cur <= p.liq) || (dir < 0 && cur >= p.liq))) {
+    return { reason: 'liq', fill: dir > 0 ? Math.min(cur, p.liq) : Math.max(cur, p.liq) };
+  }
+  if ((dir > 0 && cur <= p.stop) || (dir < 0 && cur >= p.stop)) {
+    return { reason: 'stop', fill: dir > 0 ? Math.min(cur, p.stop) : Math.max(cur, p.stop) };
+  }
+  if ((dir > 0 && cur >= p.target) || (dir < 0 && cur <= p.target)) return { reason: 'target', fill: p.target };
+  if (p.openedAt && now - new Date(p.openedAt).getTime() >= MAX_HOLD_MS) return { reason: 'time', fill: cur };
+  return null;
+}
+
+function tickExits(state, pxMap, { fundingUsdOf, now = Date.now() } = {}) {
+  const closed = [];
+  for (const p of [...state.positions]) {
+    const hit = exitCheck(p, pxMap[p.sym], now);
+    if (!hit) continue;
+    const funding = fundingUsdOf ? fundingUsdOf(p) : 0;
+    const r = closePosition(state, p.id, hit.fill, { reason: hit.reason, fundingUsd: funding });
+    if (!r.error) closed.push({ sym: p.sym, reason: hit.reason, pnl: r.pnl });
+  }
+  return closed;
+}
+
+// ---------------- 汇总 ----------------
+function summarize(state, pxMap) {
+  const A = state.account;
+  const upnl = state.positions.reduce((a, p) => a + (Number.isFinite(pxMap[p.sym]) ? pnlOf(p, pxMap[p.sym]) : 0), 0);
+  // 累计数优先用账户上的只增字段（B3）；缺字段的老状态（没走过 migrate）才退回对 history 求和
+  const fromHist = (key) => +state.history.reduce((a, h) => a + (Number(h[key]) || 0), 0).toFixed(2);
+  return {
+    equity: state.account.equity,
+    equityLive: +(state.account.equity + upnl).toFixed(2),
+    upnl: +upnl.toFixed(2),
+    positions: state.positions.length,
+    orders: state.orders.length,
+    slotsLeft: state.account.maxPos - state.positions.length,
+    realized: Number.isFinite(A.realizedTotal) ? A.realizedTotal : fromHist('pnl'),
+    fees: Number.isFinite(A.feeTotal) ? A.feeTotal : fromHist('fee'),
+    funding: Number.isFinite(A.fundingTotal) ? A.fundingTotal : fromHist('funding'),
+    trades: Number.isFinite(A.tradeCount) ? A.tradeCount : state.history.length,
+  };
+}
+return { LEV_MAX, MMR, MAX_HOLD_MS, HISTORY_MAX, ema, atrArr, rsiArr, macdArr, adxArr, computeV4, freshState, migrate, pnlOf, leveragePlan, createPosition, fundingFromRates, closePosition, tickOrders, exitCheck, tickExits, summarize };
+})();
+// <<< CORE:END <<<
+// 逻辑只有一份：全部来自上面的 Core（core/core.mjs）。页面这边不再保留任何指标/开平仓/撮合的副本。
+const { ema, atrArr, rsiArr, macdArr, pnlOf } = Core;
 // ================= 基础 =================
 const SYMS = ['BTCUSDT','ETHUSDT','BNBUSDT'];
 const FAPI = 'https://fapi.binance.com';
 const SAPI = 'https://api.binance.com';
 const KEY = 'paper.static.v1';
-const LEV_MAX = 20, MMR = 0.004, MAX_HOLD_MS = 10*86400000;
-const HISTORY_MAX = 200;
 let CORRUPT_NOTICE = null;
 
 const $ = (id) => document.getElementById(id);
@@ -240,21 +578,14 @@ let SYM = 'BTCUSDT', IV = '1h';
 let ST = loadState();
 let PX = {}, KD = null, chart = null, volChart = null, rsiChart = null, macdChart = null, series = {}, priceLines = [];
 
-function fresh(){ return { account:{equity:1500,start:1500,riskPct:1,maxPos:3,feeBps:5,leverage:20}, positions:[], history:[], orders:[], orderLog:[], seq:1 }; }
 function loadState(){
   try{
     const raw = localStorage.getItem(KEY);
-    if(!raw) return fresh();
+    if(!raw) return Core.freshState();
     const s = JSON.parse(raw);
-    if(!Array.isArray(s.positions)) s.positions=[];
-    if(!Array.isArray(s.history)) s.history=[];
-    if(!Array.isArray(s.orders)) s.orders=[];
-    if(!Array.isArray(s.orderLog)) s.orderLog=[];
-    const maxId = Math.max(0,...s.positions.map(p=>+p.id||0),...s.history.map(h=>+h.id||0),...s.orders.map(o=>+o.id||0));
-    if(!isFinite(s.seq)||s.seq<=maxId) s.seq = maxId+1;
-    s.account = Object.assign(fresh().account, s.account||{});
-    if(s.history.length>HISTORY_MAX) s.history.length = HISTORY_MAX;
-    return s;
+    // 合法 JSON 但不是账本（null / 数组 / 数字…）也算损坏：Core.migrate 会把它悄悄变成全新账户，必须先拦住
+    if(!s || typeof s!=='object' || Array.isArray(s)) throw new Error('账本格式不对（不是对象）');
+    return Core.migrate(s);   // 补字段、补累计数、history 封顶，都在核心里做
   }catch(e){
     // 数据可能还在，只是格式坏了：先原样备份，再重置，并明确告诉用户（不能静默清零）
     let backupKey = null;
@@ -268,56 +599,13 @@ function loadState(){
     console.error(tip);
     try{ alert(tip); }catch{}
     CORRUPT_NOTICE = tip;
-    return fresh();
+    return Core.freshState();
   }
 }
 // 保存成功返回 true，失败（配额满等）返回 false；调用方必须检查，失败时回滚，避免"扣了钱却没记录"
 function saveState(){
   try{ localStorage.setItem(KEY, JSON.stringify(ST)); return true; }
   catch(e){ msg('保存失败，本次操作已撤销：'+e.message); return false; }
-}
-
-// ================= 指标 =================
-const ema = (a,n)=>{ const o=[]; const k=2/(n+1); let p=a[0]; for(const x of a){ p=x*k+p*(1-k); o.push(p);} return o; };
-function atrArr(ks,n=14){
-  const tr = ks.map((x,i)=> i===0 ? x.high-x.low : Math.max(x.high-x.low, Math.abs(x.high-ks[i-1].close), Math.abs(x.low-ks[i-1].close)));
-  if(tr.length<n) return [];
-  const o=[]; let a=tr.slice(0,n).reduce((x,y)=>x+y,0)/n; o[n-1]=a;
-  for(let i=n;i<tr.length;i++){ a=(a*(n-1)+tr[i])/n; o[i]=a; }
-  return o;
-}
-function rsiArr(a,n=14){
-  const o=new Array(a.length).fill(null); let g=0,l=0;
-  for(let i=1;i<a.length;i++){
-    const d=a[i]-a[i-1], gg=Math.max(d,0), ll=Math.max(-d,0);
-    if(i<=n){ g+=gg; l+=ll; if(i===n){ g/=n; l/=n; o[i]=100-100/(1+g/(l||1e-12)); } }
-    else { g=(g*(n-1)+gg)/n; l=(l*(n-1)+ll)/n; o[i]=100-100/(1+g/(l||1e-12)); }
-  }
-  return o;
-}
-function macdArr(a,f=12,s=26,sig=9){
-  const ef=ema(a,f), es=ema(a,s);
-  const line=a.map((_,i)=>ef[i]-es[i]);
-  const signal=ema(line,sig);
-  return { line, signal, hist: line.map((v,i)=>v-signal[i]) };
-}
-function adxArr(ks,n=14){
-  const tr=[],pdm=[],ndm=[];
-  for(let i=1;i<ks.length;i++){
-    const up=ks[i].high-ks[i-1].high, dn=ks[i-1].low-ks[i].low;
-    pdm.push(up>dn&&up>0?up:0); ndm.push(dn>up&&dn>0?dn:0);
-    tr.push(Math.max(ks[i].high-ks[i].low, Math.abs(ks[i].high-ks[i-1].close), Math.abs(ks[i].low-ks[i-1].close)));
-  }
-  // 返回数组长度恒等于 ks.length（和 K 线下标一一对应），算不出来的位置是 null/undefined，调用方用 == null 判断
-  if(tr.length < n*3) return new Array(ks.length).fill(null);
-  const sm=(arr)=>{ const o=[]; let s=arr.slice(0,n).reduce((x,y)=>x+y,0); o[n-1]=s; for(let i=n;i<arr.length;i++){ s=s-s/n+arr[i]; o[i]=s; } return o; };
-  const T=sm(tr),P=sm(pdm),N=sm(ndm);
-  const dx=[];
-  for(let i=0;i<T.length;i++){ if(T[i]==null) continue; const p=(P[i]/T[i])*100, m=(N[i]/T[i])*100; dx[i]=(Math.abs(p-m)/(p+m||1))*100; }
-  const o=[]; let a=dx.slice(n*2-1,n*3-1).reduce((x,z)=>x+z,0)/n; o[n*3-2]=a;
-  for(let i=n*3-1;i<dx.length;i++){ a=(a*(n-1)+dx[i])/n; o[i]=a; }
-  // TR/DM 从第 2 根 K 线起算，o 比 ks 少一个元素；在最前面补一个 null 对齐
-  return [null, ...o];
 }
 
 // ================= 取数 =================
@@ -353,130 +641,67 @@ async function atrOf(sym){
   try{ const ks = await klines(sym,'1d',40); const at = atrArr(ks,14); const a = at[at.length-1]; return isFinite(a)&&a>0 ? a : null; }catch{ return null; }
 }
 
-// ================= 交易逻辑（与服务器版一致）=================
-function leveragePlan(sym,side,px,stop,levOverride){
-  const levRaw = (isFinite(levOverride)&&levOverride>0) ? levOverride : (ST.account.leverage||20);
-  let lev = Math.min(levRaw, LEV_MAX);
-  const liqAt = (l)=> side==='long' ? px*(1-1/l+MMR) : px*(1+1/l-MMR);
-  const ok = (l)=> side==='long' ? liqAt(l) <= stop*0.99 : liqAt(l) >= stop*1.01;
-  while(!ok(lev) && lev>1) lev -= 1;
-  return { lev, liqAt, ok, levRaw };
+// ================= 交易逻辑（全部来自 Core；这里只负责取数、存盘、失败回滚）=================
+// Core 的函数是纯函数：原地改 ST、不存盘、不联网。这里统一包一层：
+// 先留快照 → 调核心 → 存盘 → 存不进去就整体还原。账户不会出现"扣了钱却没记录"。
+function commit(fn){
+  const snap = JSON.stringify(ST);
+  const r = fn();
+  if(r && r.error) return r;                       // 核心报错时不会改状态，无需回滚
+  if(!saveState()){ ST = JSON.parse(snap); return { error:'保存失败，操作已撤销', saveFailed:true }; }
+  return r;
 }
-function createPosition({sym,side,px,atr,stopPrice,targetR=3,levOverride=null,slipPct=0}){
-  if(!SYMS.includes(sym)||!['long','short'].includes(side)) return {error:'参数错误'};
-  if(ST.positions.length >= ST.account.maxPos) return {error:`已达最大持仓 ${ST.account.maxPos}`};
-  if(ST.positions.some(p=>p.sym===sym)) return {error:`${sym} 已有持仓，v4 规定同一标的不重复开仓`};
-  if(!isFinite(px)||px<=0) return {error:`${sym} 暂时取不到价格`};
-  if(!isFinite(atr)||atr<=0) return {error:'ATR 数据不足'};
-
-  const dir = side==='long'?1:-1;
-  const stop = (isFinite(stopPrice)&&stopPrice>0) ? stopPrice : px - dir*1.5*atr;
-  if(side==='long' && stop>=px) return {error:`多单止损 ${stop} 必须低于入场 ${px}`};
-  if(side==='short' && stop<=px) return {error:`空单止损 ${stop} 必须高于入场 ${px}`};
-
-  const riskUsd = ST.account.equity*ST.account.riskPct/100;
-  const dist = Math.abs(px-stop);
-  const qty = Math.floor((riskUsd/dist)*100000)/100000;
-  if(!isFinite(qty)||qty<=0) return {error:'数量过小'};
-
-  const {lev,liqAt,ok,levRaw} = leveragePlan(sym,side,px,stop,levOverride);
-  if(!ok(lev)) return {error:`止损 ${stop.toFixed(2)} 离入场太远，任何杠杆下强平都会先于止损；请缩小止损`};
-
-  const liq = +liqAt(lev).toFixed(2);
-  const warn = lev < Math.min(levRaw,LEV_MAX)
-    ? `杠杆自动从 ${Math.min(levRaw,LEV_MAX)}x 降到 ${lev}x：原档位强平会先于止损触发`
-    : (side==='short' ? 'v4 只做多，此为练习单' : '');
-
-  const p = {
-    id: ST.seq++, sym, side, qty,
-    entry:+px.toFixed(2), stop:+stop.toFixed(2),
-    target:+(px + dir*targetR*Math.abs(px-stop)).toFixed(2),
-    leverage:lev, margin:+(qty*px/lev).toFixed(2), liq,
-    entrySlipPct:+Number(slipPct||0).toFixed(4),
-    practice:false, openedAt:new Date().toISOString()
-  };
-  ST.positions.push(p);
-  if(!saveState()){
-    // 没存上就当没开：撤回持仓并还原编号
-    ST.positions.pop(); ST.seq = p.id;
-    return { error:'保存失败，未开仓', saveFailed:true };
-  }
-  return { position:p, warn, atr };
+function createPosition(opts){
+  return commit(()=>Core.createPosition(ST, Object.assign({ syms:SYMS }, opts)));
 }
-function pnlOf(p,px){ const dir=p.side==='long'?1:-1; return (px-p.entry)*p.qty*dir; }
 
-async function closePos(id,px){
-  const i = ST.positions.findIndex(p=>p.id===id);
-  if(i<0) return {error:'找不到持仓'};
-  if(!isFinite(px)||px<=0) return {error:'暂时取不到价格，未平仓'};
-  const p = ST.positions[i];
-  const gross = pnlOf(p,px);
-  const notional = ((p.entry+px)/2)*p.qty;
-  const feeBps = ST.account.feeBps==null?5:ST.account.feeBps;
-  const fee = notional*(feeBps/10000)*2;
-  // 资金费
-  let funding = 0;
+// 持仓期间的资金费：按币安历史费率，对 openedAt 之后实际结算的每一期逐期累加（B2）
+async function fundingCostOf(p){
+  try{
+    const rs = await get(`/fapi/v1/fundingRate?symbol=${p.sym}&limit=300`);
+    if(Array.isArray(rs) && rs.length) return Core.fundingFromRates(p, rs, Date.now(), 300);
+  }catch{}
+  // 历史接口不可用时的兜底：当前费率 × 期数（旧算法，只在取不到历史时用）
   try{
     const pi = await get(`/fapi/v1/premiumIndex?symbol=${p.sym}`);
     const rate = +pi.lastFundingRate;
+    if(!Number.isFinite(rate)) return 0;
     const periods = Math.max(0, Math.floor((Date.now()-new Date(p.openedAt).getTime())/(8*3600e3)));
-    funding = (p.side==='long'?1:-1)*p.entry*p.qty*rate*periods;
-  }catch{}
-  const realized = gross - fee - funding;
-  // 先留快照：保存失败时整笔回滚，保证"扣了钱就一定有记录"
-  const snap = { equity:ST.account.equity, history:ST.history.slice() };
-  ST.account.equity += realized;
-  ST.history.unshift({
-    id:p.id, sym:p.sym, side:p.side, entry:p.entry, exit:+px.toFixed(2), qty:p.qty,
-    pnl:+realized.toFixed(2), gross:+gross.toFixed(2), fee:+fee.toFixed(2), funding:+funding.toFixed(2),
-    entrySlipPct:p.entrySlipPct, exitSlipPct:0, reason:'manual',
-    openedAt:p.openedAt, closedAt:new Date().toISOString()
-  });
-  if(ST.history.length>HISTORY_MAX) ST.history.length = HISTORY_MAX;
-  ST.positions.splice(i,1);
-  if(!saveState()){
-    ST.account.equity = snap.equity;
-    ST.history = snap.history;
-    ST.positions.splice(i,0,p);
-    return {error:'保存失败，未平仓（账户未变动）', saveFailed:true};
-  }
-  return {pnl:realized};
+    return (p.side==='long'?1:-1)*p.entry*p.qty*rate*periods;
+  }catch{ return 0; }
+}
+
+async function closePos(id, px, reason='manual'){
+  const p = ST.positions.find(x=>x.id===id);
+  if(!p) return {error:'找不到持仓'};
+  if(!Number.isFinite(px)||px<=0) return {error:'暂时取不到价格，未平仓'};
+  const funding = await fundingCostOf(p);
+  return commit(()=>Core.closePosition(ST, id, px, { reason, fundingUsd:funding }));
 }
 
 async function tickExits(){
   if(!ST.positions.length) return;
   const px = await prices();
-  for(const p of [...ST.positions]){
-    const cur = px[p.sym]; if(!isFinite(cur)) continue;
-    const dir = p.side==='long'?1:-1;
-    let hit=null, fill=null;
-    if(p.liq && ((dir>0&&cur<=p.liq)||(dir<0&&cur>=p.liq))){ hit='liq'; fill = dir>0?Math.min(cur,p.liq):Math.max(cur,p.liq); }
-    else if((dir>0&&cur<=p.stop)||(dir<0&&cur>=p.stop)){ hit='stop'; fill = dir>0?Math.min(cur,p.stop):Math.max(cur,p.stop); }
-    else if((dir>0&&cur>=p.target)||(dir<0&&cur<=p.target)){ hit='target'; fill=p.target; }
-    else if(Date.now()-new Date(p.openedAt).getTime() >= MAX_HOLD_MS){ hit='time'; fill=cur; }
-    if(hit){ await closePos(p.id, fill); }
-  }
+  // 先用核心的判定找出"这一轮要平的"，只为它们去取费率（取费率要联网，不能每 5 秒为所有持仓都取）
+  const hits = ST.positions.filter(p=>Core.exitCheck(p, px[p.sym]));
+  if(!hits.length) return;
+  const funding = {};
+  for(const p of hits) funding[p.id] = await fundingCostOf(p);
+  const snap = JSON.stringify(ST);
+  const closed = Core.tickExits(ST, px, { fundingUsdOf:(p)=>funding[p.id]||0 });
+  if(closed.length && !saveState()) ST = JSON.parse(snap);   // 存不进去：整体还原，下一轮重试
 }
 
 async function tickOrders(){
   if(!ST.orders.length) return;
   const px = await prices();
-  const keep=[]; let changed=false;
-  const logIt=(o,status,note)=>{ ST.orderLog.unshift({at:new Date().toISOString(),sym:o.sym,side:o.side,price:o.price,status,note}); if(ST.orderLog.length>30) ST.orderLog.length=30; };
-  for(const o of [...ST.orders]){
-    const cur = px[o.sym]; if(!isFinite(cur)){ keep.push(o); continue; }
-    if(o.expiresAt && Date.now()>Date.parse(o.expiresAt)){ logIt(o,'expired','超过有效期自动撤销'); changed=true; continue; }
-    const hit = o.side==='long' ? cur<=o.price : cur>=o.price;
-    if(!hit){ keep.push(o); continue; }
-    const fillPx = o.side==='long' ? Math.min(o.price,cur) : Math.max(o.price,cur);
-    const atr = await atrOf(o.sym);
-    const r = createPosition({sym:o.sym, side:o.side, px:fillPx, atr, stopPrice:o.stop, targetR:o.targetR, levOverride:o.leverage});
-    if(r.saveFailed){ keep.push(o); continue; } // 存储写不进去：挂单留着，下个周期再试，别当成被拒绝
-    logIt(o, r.error?'rejected':'filled', r.error || `成交 ${r.position.entry}，止损 ${r.position.stop}，${r.position.leverage}x`);
-    changed=true;
-  }
-  ST.orders = keep;
-  if(changed) saveState();
+  // 核心的撮合是同步的，所以先把"已触达"的挂单需要的 ATR 取好
+  const touched = (o)=>{ const c = px[o.sym]; return Number.isFinite(c) && (o.side==='long' ? c<=o.price : c>=o.price); };
+  const atrMap = {};
+  for(const sym of new Set(ST.orders.filter(touched).map(o=>o.sym))) atrMap[sym] = await atrOf(sym);
+  const snap = JSON.stringify(ST);
+  const r = Core.tickOrders(ST, px, { atrOf:(sym)=>atrMap[sym] });
+  if(r.changed && !saveState()) ST = JSON.parse(snap);       // 存不进去：整体还原，挂单留着下一轮重试
 }
 
 // ================= 图表 =================
@@ -635,40 +860,21 @@ async function loadChart(){
 // v4 判定：固定用日线，不随图表周期变化
 let V4 = { markers:null, last:null };
 async function loadV4(){
+  const sym = SYM;
   try{
-    const ks = await klines(SYM, '1d', 400);
-    const closes = ks.map(k=>k.close);
-    const e50 = ema(closes,50), e200 = ema(closes,Math.min(200,Math.max(2,closes.length-1)));
-    const ad = adxArr(ks,14), at = atrArr(ks,14);
-    const markers=[];
-    for(let i=210;i<ks.length-1;i++){
-      const a = ad[i], t = at[i];
-      if(a==null||t==null) continue;
-      const atrPct = t/ks[i].close*100;
-      const ok = a>30 && ks[i].close>e50[i] && ks[i].close>e200[i] && e50[i]>e50[i-20] && atrPct>=2 && atrPct<=6;
-      if(ok) markers.push({time:ks[i].time,position:'belowBar',color:'#f0b90b',shape:'arrowUp',text:'v4'});
-    }
-    V4.markers = markers.slice(-40);
-
-    // 2026-11-24：与服务端 /api/v4 对齐——判定用「上一根已收盘的日线」，
-    // 不用正在走的那根（盘中会来回翻），所以两版的 v4 读数现在一定一致。
-    const i = Math.max(1, ks.length-2);
-    const adx = ad[i], t = at[i];
-    const atrPct = t/ks[i].close*100;
-    const conds = [
-      ['ADX>30', adx>30, adx==null?'—':adx.toFixed(1)],
-      ['价>EMA50', ks[i].close>e50[i], fmt(e50[i],0)],
-      ['价>EMA200', ks[i].close>e200[i], fmt(e200[i],0)],
-      ['EMA50↑', e50[i]>e50[i-20], ''],
-      ['ATR 2–6%', atrPct>=2&&atrPct<=6, atrPct.toFixed(2)+'%'],
-    ];
-    const pass = conds.filter(c=>c[1]).length;
-    V4.ctx = { conds, pass, adx, atr:t, atrPct, e50:e50[i], e200:e200[i], close:ks[i].close };
-    V4.atr = t; V4.pass = pass; V4.ks = ks;
-    $('lights').innerHTML = `<span class="muted" style="font-size:11px;align-self:center">v4 判定（日线 · 按上一根已收盘）：</span>`
-      + conds.map(([n,ok,v])=>
-        `<span class="light ${ok?'ok':'no'}">${ok?'✓':'✗'} ${n}${v?' · '+v:''}</span>`).join('')
-      + `<span class="light ${pass===5?'ok':'no'}">${pass}/5 ${pass===5?'· 可开仓':'· 不开仓'}</span>`;
+    const ks = await klines(sym, '1d', 400);
+    if(sym!==SYM) return;                                  // 等数据期间已切走，丢弃过期结果
+    const v = Core.computeV4(ks);
+    if(!v) throw new Error('日线数据不足');
+    V4.markers = v.markers.map(m=>({time:m.time,position:'belowBar',color:'#f0b90b',shape:'arrowUp',text:'v4'}));
+    // 核心给的 EMA 是原始数字，这里只负责显示格式
+    const conds = v.conds.map(([n,ok,val])=>[n, ok, typeof val==='number' ? fmt(val,0) : val]);
+    V4.ctx = { conds, pass:v.pass, adx:v.adx, atr:v.atr, atrPct:v.atrPct, e50:v.e50, e200:v.e200, close:v.close };
+    V4.atr = v.atr; V4.pass = v.pass; V4.ks = ks;
+    $('lights').innerHTML = `<span class="muted" style="font-size:11px;align-self:center">v4 判定（固定日线，用上一根已收盘）：</span>`
+      + conds.map(([n,ok,val])=>
+        `<span class="light ${ok?'ok':'no'}">${ok?'✓':'✗'} ${n}${val?' · '+val:''}</span>`).join('')
+      + `<span class="light ${v.pass===5?'ok':'no'}">${v.pass}/5 ${v.pass===5?'· 可开仓':'· 不开仓'}</span>`;
     if(IV==='1d') series.candle.setMarkers(V4.markers);
   }catch(e){ $('lights').innerHTML = `<span class="light no">v4 判定失败：${e.message}</span>`; }
 }
@@ -679,7 +885,7 @@ function render(){
   const upnl = ST.positions.reduce((a,p)=>a+(isFinite(PX[p.sym])?pnlOf(p,PX[p.sym]):0),0);
   $('equity').textContent = '$'+fmt(eq+upnl);
   const chg = (eq+upnl)/ST.account.start-1;
-  const fees = ST.history.reduce((a,h)=>a+(h.fee||0),0);
+  const fees = ST.account.feeTotal;   // 只增字段，不随 history 封顶缩水（B3）
   $('equitySub').innerHTML = `起始 $${fmt(ST.account.start,0)} ｜ 累计 <span class="${chg>=0?'up':'down'}">${chg>=0?'+':''}${fmt(chg*100)}%</span> ｜ 手续费 -$${fmt(fees)} ｜ 浮动 ${upnl>=0?'+':''}${fmt(upnl)}`;
   $('riskPct').value = ST.account.riskPct;
   $('maxPos').value = ST.account.maxPos;
@@ -886,8 +1092,8 @@ function ask(raw){
   // 手续费
   if(h('手续费','费率','费')){
     const bps = ST.account.feeBps;
-    const feeSum = ST.history.reduce((a,x)=>a+(x.fee||0),0);
-    const fundSum = ST.history.reduce((a,x)=>a+(x.funding||0),0);
+    const feeSum = ST.account.feeTotal;
+    const fundSum = ST.account.fundingTotal;
     return `费率 <b>${bps}‱</b>（单边），开平双边 = ${(bps*2/100).toFixed(2)}%。<br>
       例：仓位名义价值 $1,000 → 开平共 <b>$${fmt(1000*bps*2/10000,2)}</b>。<br>
       <span class="muted">历史累计：手续费 $${fmt(feeSum)}，资金费 $${fmt(fundSum)}。</span>`;
@@ -905,9 +1111,9 @@ function ask(raw){
   // 盈亏
   if(h('盈亏','赚了','亏了','今天','净值','账户')){
     const upnl = pos.reduce((a,p)=>a+(isFinite(pxOf(p.sym))?pnlOf(p,pxOf(p.sym)):0),0);
-    const realized = ST.history.reduce((a,x)=>a+(x.pnl||0),0);
+    const realized = ST.account.realizedTotal;
     return `账户净值 <b>$${fmt(eq)}</b>（起始 $${fmt(ST.account.start,0)}，${((eq/ST.account.start-1)*100).toFixed(2)}%）<br>
-      已实现 ${realized>=0?'+':''}$${fmt(realized)}｜浮动 ${upnl>=0?'+':''}$${fmt(upnl)}｜成交 ${ST.history.length} 笔`;
+      已实现 ${realized>=0?'+':''}$${fmt(realized)}｜浮动 ${upnl>=0?'+':''}$${fmt(upnl)}｜成交 ${ST.account.tradeCount} 笔`;
   }
 
   // 兜底
@@ -988,7 +1194,7 @@ function cancelOrder(id){
 }
 function resetAccount(){
   if(!confirm('重置账户？持仓、挂单、历史都会清空')) return;
-  ST = fresh(); saveState(); render(); drawLines(); loadChart(); msg('已重置');
+  ST = Core.freshState(); saveState(); render(); drawLines(); loadChart(); msg('已重置');
 }
 function exportData(){
   const blob = new Blob([JSON.stringify(ST,null,2)],{type:'application/json'});
@@ -1003,23 +1209,13 @@ function importData(input){
   rd.onload = ()=>{ try{
     const s = JSON.parse(rd.result);
     if(!s.account) throw new Error('格式不对');
-    ST = loadStateFrom(s); saveState(); render(); drawLines(); msg('已导入');
+    const old = ST; ST = Core.migrate(s);
+    if(!saveState()){ ST = old; return; }
+    render(); drawLines(); msg('已导入');
   }catch(e){ msg('导入失败：'+e.message); } };
   rd.readAsText(f);
   input.value='';
 }
-function loadStateFrom(s){
-  s.positions = Array.isArray(s.positions)?s.positions:[];
-  s.history = Array.isArray(s.history)?s.history:[];
-  s.orders = Array.isArray(s.orders)?s.orders:[];
-  s.orderLog = Array.isArray(s.orderLog)?s.orderLog:[];
-  const maxId = Math.max(0,...s.positions.map(p=>+p.id||0),...s.history.map(h=>+h.id||0),...s.orders.map(o=>+o.id||0));
-  if(!isFinite(s.seq)||s.seq<=maxId) s.seq=maxId+1;
-  s.account = Object.assign(fresh().account, s.account||{});
-  if(s.history.length>HISTORY_MAX) s.history.length = HISTORY_MAX;
-  return s;
-}
-
 // ================= 启动 =================
 function buildTabs(){
   $('symTabs').innerHTML = SYMS.map(s=>`<div class="tab ${s===SYM?'on':''}" data-sym="${s}">${s.replace('USDT','')}</div>`).join('');
