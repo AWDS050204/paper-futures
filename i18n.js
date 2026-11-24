@@ -168,8 +168,62 @@
     '同一标的不能重复开仓（v4 规则）。': 'One position per symbol (v4 rule).',
     '这不是历史最高点，只是这 400 根日线里我拉到的范围。':
       'Not the all-time high — just the range of the 400 daily bars I fetched.',
+    '最近操作': 'Recent activity',
+    '还没有操作记录。开仓、平仓、挂单、撤单、自动止损都会记在这里。':
+      'No activity yet. Opens, closes, limit orders, cancels and automatic exits all land here.',
     'ATR 2–6%': 'ATR 2–6%'
   };
+
+  // 「最近操作」是代码拼出来的句子，用词表逐词替换（只作用于 #actLog 内部）
+  var ACT = [
+    [/^开多 /, 'Long '], [/^开空 /, 'Short '],
+    [/^平仓 /, 'Closed '], [/^挂多 /, 'Buy limit '], [/^挂空 /, 'Sell limit '],
+    [/^撤单 /, 'Cancelled '], [/^自动平仓 /, 'Auto closed '], [/^改配置：/, 'Settings: '],
+    [/｜止损 /g, ' | stop '], [/｜盈亏 /g, ' | P&L '], [/｜/g, ' | '],
+    [/默认杠杆/g, 'default leverage'], [/成交时按 ATR/g, 'ATR at fill'],
+    [/（止损）/g, ' (stop)'], [/（止盈）/g, ' (target)'], [/（强平）/g, ' (liquidated)'], [/（到期）/g, ' (timeout)'],
+    [/h 有效/g, 'h valid'], [/不过期/g, 'never expires'],
+    [/ 多 @/g, ' long @'], [/ 空 @/g, ' short @'],
+    [/\s·\s/g, ' · '],
+    [/最多 /g, 'max '], [/单 · /g, 'pos · '], [/ 费率 /g, ' fee '],
+    [/风险 /g, 'risk '],
+    [/（最近 (\d+) 条）/, ' (last $1)']
+  ];
+
+  function translateActivity() {
+    var box = document.getElementById('actLog');
+    if (!box) return;
+    var spans = box.querySelectorAll('div > span:last-child');
+    var cnt = document.getElementById('actCount');
+
+    if (LANG !== 'en') {
+      // 切回中文：用记下的原文还原（这些节点是 render() 建的，store 里有中文原值）
+      for (var j = 0; j < spans.length; j++) {
+        if (store.has(spans[j]) && spans[j].textContent !== store.get(spans[j])) {
+          spans[j].textContent = store.get(spans[j]);
+        }
+      }
+      if (cnt && store.has(cnt) && cnt.textContent !== store.get(cnt)) cnt.textContent = store.get(cnt);
+      return;
+    }
+
+    for (var i = 0; i < spans.length; i++) {
+      var el = spans[i];
+      if (!/[\u4e00-\u9fa5]/.test(el.textContent)) continue;
+      if (!store.has(el)) store.set(el, el.textContent);
+      var t = store.get(el);
+      for (var k = 0; k < ACT.length; k++) {
+        ACT[k][0].lastIndex = 0;
+        t = t.replace(ACT[k][0], ACT[k][1]);
+      }
+      if (el.textContent !== t) el.textContent = t;
+    }
+    if (cnt && /[\u4e00-\u9fa5]/.test(cnt.textContent)) {
+      if (!store.has(cnt)) store.set(cnt, cnt.textContent);
+      var c = store.get(cnt).replace(/（最近 (\d+) 条）/, ' (last $1)');
+      if (cnt.textContent !== c) cnt.textContent = c;
+    }
+  }
 
   // 针对动态生成的行（数字会变，只能按模式翻）
   var RULES = [
@@ -269,6 +323,8 @@
       acceptNode: function (n) {
         var p = n.parentNode;
         if (!p || skipTags[p.nodeName]) return NodeFilter.FILTER_REJECT;
+        // #actLog 由 translateActivity 单独管，避免两套还原逻辑打架
+        if (p.closest && p.closest('#actLog')) return NodeFilter.FILTER_REJECT;
         return n.nodeValue && n.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       }
     });
@@ -313,7 +369,7 @@
   function refresh() {
     if (busy) { pending = true; return; }
     busy = true;
-    try { walk(document.body); attrs(document.body); }
+    try { walk(document.body); attrs(document.body); translateActivity(); }
     finally {
       busy = false;
       if (pending) { pending = false; setTimeout(refresh, 0); }
