@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>合约模拟交易台 · 纯前端版</title>
+<script src="./lightweight-charts.js"></script>
+<style>
+  :root{
+    --bg:#0b0d11; --card:#12151c; --line:#242a36; --txt:#d7dbe3; --dim:#7c8598;
+    --up:#26a69a; --down:#ef5350; --warn:#f0b90b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font:13px/1.6 -apple-system,"Segoe UI","Noto Sans SC",sans-serif}
+  .wrap{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:12px;padding:12px;max-width:1800px;margin:0 auto}
+  @media (max-width:1100px){ .wrap{grid-template-columns:1fr} }
+  h2{font-size:13px;margin:0 0 8px;color:#aeb6c4;font-weight:600;letter-spacing:.3px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .flex{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .muted{color:var(--dim)}
+  .up{color:var(--up)} .down{color:var(--down)}
+  .big{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+  .sub{font-size:12px;color:var(--dim)}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+  .tab{padding:4px 10px;border-radius:6px;border:1px solid var(--line);background:#1b1f28;color:var(--dim);cursor:pointer;font-size:12px}
+  .tab.on{background:#2a3040;color:var(--txt);border-color:#3a4252}
+  button{background:#222836;color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:6px 11px;cursor:pointer;font-size:12px}
+  button:hover{border-color:#3a4252}
+  button.long{background:#12312c;border-color:#1f5a50;color:#7ee0d0}
+  button.short{background:#3a1c1c;border-color:#6b2b2b;color:#ff9a9a}
+  button.ghost{background:transparent}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:6px 3px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+  th{color:var(--dim);font-weight:500}
+  .pill{display:inline-block;padding:1px 6px;border-radius:20px;font-size:10px}
+  .pill.long{background:#12312c;color:#7ee0d0}
+  .pill.short{background:#3a1c1c;color:#ff9a9a}
+  input{background:#0f1115;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:5px 7px;font-size:12px;width:80px}
+  .msg{min-height:18px;font-size:12px;color:var(--warn);margin-top:6px}
+  .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin:6px 0}
+  .stats b{color:var(--txt);font-weight:600}
+  #chart{height:380px}
+  #rsi{height:90px} #macd{height:100px} #vol{height:70px}
+  .lights{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .light{font-size:11px;padding:3px 8px;border-radius:20px;border:1px solid var(--line)}
+  .light.ok{background:#12312c;color:#7ee0d0;border-color:#1f5a50}
+  .light.no{background:#2a1c1c;color:#e08a8a;border-color:#5a2b2b}
+  .lvl{padding:4px 0;border-bottom:1px dashed #1c212b}
+  .lvlrow{display:flex;justify-content:space-between;font-size:11px}
+  .lvlbar{height:5px;background:#1a1f28;border-radius:3px;margin-top:3px;overflow:hidden}
+  .lvlbar i{display:block;height:100%;border-radius:3px;opacity:.8}
+  .chip{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--dim);cursor:pointer;background:#171b23}
+  .chip:hover{border-color:#3a4252;color:var(--txt)}
+  details summary{cursor:pointer;font-weight:600;color:#aeb6c4;font-size:13px}
+  .gloss{font-size:12px;line-height:1.95;color:var(--dim)}
+  .gloss b{color:#cfd3dc}
+  .gloss .sec{color:#cfd3dc;font-weight:700;margin-top:10px}
+  a{color:#6fa8ff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 左栏：图表 -->
+  <div>
+    <div class="card">
+      <div class="flex" style="justify-content:space-between">
+        <div>
+          <div class="big" id="equity">—</div>
+          <div class="sub" id="equitySub">纯前端 · 数据只存在本浏览器</div>
+        </div>
+        <div class="flex">
+          <button class="ghost" onclick="exportData()">导出</button>
+          <button class="ghost" onclick="document.getElementById('imp').click()">导入</button>
+          <input id="imp" type="file" accept=".json" style="display:none" onchange="importData(this)">
+          <button class="ghost" onclick="resetAccount()">重置</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <div class="tabs" id="symTabs"></div>
+      <div class="tabs" id="ivTabs"></div>
+      <div class="stats" id="stats">加载中…</div>
+      <div class="lights" id="lights"></div>
+      <div id="chart"></div>
+      <div id="vol"></div>
+      <div id="rsi"></div>
+      <div id="macd"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <details>
+        <summary>指标说明（记不住就点开）</summary>
+        <div class="gloss" style="margin-top:10px">
+          <div class="sec">账户</div>
+          <b>单笔风险 %</b>　每笔最多亏账户的百分比。<b>仓位由它倒算</b>，不是手填的。<br>
+          <b>最多持仓</b>　同时持仓上限，v4 规则是 3。<br>
+          <b>杠杆 x</b>　名义仓位 ÷ 保证金。<b>只决定保证金占用和强平距离，不决定你亏多少钱。</b><br>
+          <b>费率 ‱</b>　单边手续费，币安合约 taker = 5‱ = 0.05%，开平双边。<br>
+          <div class="sec">挂单</div>
+          <b>挂价</b>　买单必须低于现价、卖单必须高于现价，否则会立即成交。<br>
+          <b>止损</b>　留空 = 成交时按 <b>1.5×ATR</b>；填了就按你填的。<br>
+          <b>杠杆</b>　留空 = 账户默认。<b>只是上限</b>：止损太远时会自动降到「止损先于强平」的那一档。<br>
+          <b>盈亏比 R</b>　中文叫<b>风险单位</b>。1R = 入场到止损的距离。<br>
+          　　填 3 = 止盈设在 3 倍风险处。<b>R 不是杠杆。</b><br>
+          <b>有效期</b>　挂单存活小时数，0 = 不过期。<br>
+          <div class="sec">持仓表</div>
+          <b>数量</b>　币的数量，由「风险金额 ÷ 止损距离」倒算。<br>
+          <b>强平</b>　入场 × (1 − 1/杠杆 + 维持保证金率 0.4%)。<br>
+          <b>止损先于强平</b>　硬规则：止损必须比强平更早触发，否则那条止损等于不存在。<br>
+          <div class="sec">历史</div>
+          <b>盈亏</b>　净盈亏，已扣手续费和资金费。<br>
+          <b>资金费</b>　每 8 小时结算，多头付正费率，按持仓时长折算。<br>
+          <b>滑点</b>　成交价相对盘口中间价的偏离。<br>
+          <div class="sec">指标</div>
+          <b>EMA20/50/200</b>　指数移动平均。v4 要求价 &gt; EMA50 与 EMA200，且 EMA50 上行。<br>
+          <b>RSI(14)</b>　相对强弱。本系统<b>不拿它做入场依据</b>（回测无效）。<br>
+          <b>MACD</b>　12/26 EMA 之差与 9 周期信号线。<br>
+          <b>ADX(14)</b>　趋势强度。v4 要求 &gt;30，否则在震荡里做趋势会亏。<br>
+          <b>ATR(14)</b>　平均真实波幅，用 % 表示波动。v4 要 2%–6%；止损 = 1.5×ATR。<br>
+          <div class="sec">其他</div>
+          <b>资金费率</b>　每 8 小时费率，正数 = 多头付给空头；×3×365 可折年化。<br>
+          <b>OI</b>　未平仓合约价值。涨 = 新资金进场，跌 = 平仓离场。<br>
+          <b>多空比</b>　全局账户多空人数比，&gt;2 说明多头拥挤。<br>
+          <b>爆仓热力图</b>　用 OI × 常见杠杆档位估算，<b>不是真实强平单</b>。<br>
+          <b>两本账</b>　A 轨严格按 v4（唯一对外报数）；B 轨是练习盘，不计入绩效。<br>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <!-- 右栏：操作 -->
+  <div>
+    <div class="card">
+      <h2>账户</h2>
+      <div class="flex">
+        <span class="muted">单笔风险</span><input id="riskPct" type="number" step="0.5" min="0.5" max="5">
+        <span class="muted">%</span>
+        <span class="muted" style="margin-left:8px">最多持仓</span><input id="maxPos" type="number" step="1" min="1" max="5">
+      </div>
+      <div class="flex" style="margin-top:6px">
+        <span class="muted">杠杆</span><input id="leverage" type="number" step="1" min="1" max="125">
+        <span class="muted">x</span>
+        <span class="muted" style="margin-left:8px">费率</span><input id="feeBps" type="number" step="0.5" min="0" max="20">
+        <span class="muted">‱</span>
+        <button class="ghost" onclick="saveConfig()" style="margin-left:8px">保存</button>
+      </div>
+      <div class="flex" style="margin-top:8px">
+        <button class="long" id="btnLong">做多</button>
+        <button class="short" id="btnShort">做空</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>问一句 <span class="muted">纯本地计算 · 只答事实</span></h2>
+      <div class="flex" style="margin-bottom:6px">
+        <input id="qInput" placeholder="例：我的强平在哪" style="flex:1;width:auto" onkeydown="if(event.key==='Enter')doAsk()">
+        <button onclick="doAsk()">问</button>
+      </div>
+      <div class="flex" style="gap:4px;margin-bottom:8px" id="qChips"></div>
+      <div id="qAns" class="muted" style="font-size:12px;line-height:1.85;min-height:20px"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>挂单 <span class="muted" id="ordCount"></span></h2>
+      <div class="flex" style="margin-bottom:8px">
+        <span class="muted">挂价</span><input id="ordPrice" type="number" step="0.1" style="width:96px">
+        <span class="muted">止损</span><input id="ordStop" type="number" step="0.1" placeholder="空=ATR" style="width:92px">
+        <span class="muted">杠杆</span><input id="ordLev" type="number" step="1" min="1" max="125" placeholder="默认" style="width:70px">
+      </div>
+      <div class="flex" style="margin-bottom:8px">
+        <span class="muted">盈亏比 R</span><input id="ordR" type="number" step="0.5" min="0.5" max="10" value="3" style="width:64px">
+        <span class="muted">有效期</span><input id="ordTtl" type="number" step="1" min="0" value="24" style="width:60px">
+        <span class="muted">h</span>
+        <button class="ghost" onclick="fillOrderPrice()">用现价</button>
+      </div>
+      <div class="flex" style="margin-bottom:8px">
+        <button class="long" onclick="placeOrder('long')">挂多</button>
+        <button class="short" onclick="placeOrder('short')">挂空</button>
+      </div>
+      <table>
+        <thead><tr><th>币</th><th>向</th><th>挂价</th><th>距现价</th><th>止损</th><th>杠杆</th><th>R</th><th></th></tr></thead>
+        <tbody id="orders"><tr><td colspan="8" class="muted">无挂单</td></tr></tbody>
+      </table>
+      <div id="orderLog" class="muted" style="margin-top:6px;font-size:11px;line-height:1.7"></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>当前持仓</h2>
+      <table>
+        <thead><tr><th>币</th><th>向</th><th>数量</th><th>开仓</th><th>止损</th><th>强平</th><th>浮动</th><th></th></tr></thead>
+        <tbody id="positions"><tr><td colspan="8" class="muted">无持仓</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>爆仓热力图 <span class="muted" id="liqNote"></span></h2>
+      <div id="liqList" class="muted">加载中…</div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>历史成交</h2>
+      <table>
+        <thead><tr><th>时间</th><th>币</th><th>向</th><th>盈亏</th><th>费</th><th>资金费</th><th>原因</th></tr></thead>
+        <tbody id="history"><tr><td colspan="7" class="muted">暂无</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>说明</h2>
+      <div class="muted" style="font-size:12px;line-height:1.8">
+        · 纯前端，所有数据只存在<b>本浏览器</b>的 localStorage，换设备/清缓存会丢，请用「导出」备份。<br>
+        · 行情直连币安公开接口，不需要任何 API key。<br>
+        · <b>新闻已移除</b>：RSS 不支持跨域，纯前端拿不到。<br>
+        · 这是纸面账户，<b>不涉及真实资金，不构成投资建议</b>。
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ================= 基础 =================
+const SYMS = ['BTCUSDT','ETHUSDT','BNBUSDT'];
+const FAPI = 'https://fapi.binance.com';
+const SAPI = 'https://api.binance.com';
+const KEY = 'paper.static.v1';
+const LEV_MAX = 20, MMR = 0.004, MAX_HOLD_MS = 10*86400000;
+const HISTORY_MAX = 200;
+let CORRUPT_NOTICE = null;
+
+const $ = (id) => document.getElementById(id);
+const fmt = (v,d=2) => (v==null||!isFinite(v)) ? '—' : Number(v).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+const msg = (t) => { $('msg').textContent = t; };
+const sleep = (ms) => new Promise(r=>setTimeout(r,ms));
+
+let SYM = 'BTCUSDT', IV = '1h';
+let ST = loadState();
+let PX = {}, KD = null, chart = null, volChart = null, rsiChart = null, macdChart = null, series = {}, priceLines = [];
+
+function fresh(){ return { account:{equity:1500,start:1500,riskPct:1,maxPos:3,feeBps:5,leverage:20}, positions:[], history:[], orders:[], orderLog:[], seq:1 }; }
+function loadState(){
+  try{
+    const raw = localStorage.getItem(KEY);
+    if(!raw) return fresh();
+    const s = JSON.parse(raw);
+    if(!Array.isArray(s.positions)) s.positions=[];
+    if(!Array.isArray(s.history)) s.history=[];
+    if(!Array.isArray(s.orders)) s.orders=[];
+    if(!Array.isArray(s.orderLog)) s.orderLog=[];
+    const maxId = Math.max(0,...s.positions.map(p=>+p.id||0),...s.history.map(h=>+h.id||0),...s.orders.map(o=>+o.id||0));
+    if(!isFinite(s.seq)||s.seq<=maxId) s.seq = maxId+1;
+    s.account = Object.assign(fresh().account, s.account||{});
+    if(s.history.length>HISTORY_MAX) s.history.length = HISTORY_MAX;
+    return s;
+  }catch(e){
+    // 数据可能还在，只是格式坏了：先原样备份，再重置，并明确告诉用户（不能静默清零）
+    let backupKey = null;
+    try{
+      const bad = localStorage.getItem(KEY);
+      if(bad){ backupKey = KEY+'.corrupt.'+Date.now(); localStorage.setItem(backupKey, bad); }
+    }catch{ backupKey = null; }
+    const tip = backupKey
+      ? `本地账本损坏（${e.message}），已把原始数据备份到 localStorage 的「${backupKey}」，并从初始状态开始。`
+      : `本地账本损坏（${e.message}），备份失败，将从初始状态开始。原数据仍在 localStorage 的「${KEY}」里，在保存新数据之前请先手动复制出来。`;
+    console.error(tip);
+    try{ alert(tip); }catch{}
+    CORRUPT_NOTICE = tip;
+    return fresh();
+  }
+}
+// 保存成功返回 true，失败（配额满等）返回 false；调用方必须检查，失败时回滚，避免"扣了钱却没记录"
+function saveState(){
+  try{ localStorage.setItem(KEY, JSON.stringify(ST)); return true; }
+  catch(e){ msg('保存失败，本次操作已撤销：'+e.message); return false; }
+}
+
+// ================= 指标 =================
+const ema = (a,n)=>{ const o=[]; const k=2/(n+1); let p=a[0]; for(const x of a){ p=x*k+p*(1-k); o.push(p);} return o; };
+function atrArr(ks,n=14){
+  const tr = ks.map((x,i)=> i===0 ? x.high-x.low : Math.max(x.high-x.low, Math.abs(x.high-ks[i-1].close), Math.abs(x.low-ks[i-1].close)));
+  if(tr.length<n) return [];
+  const o=[]; let a=tr.slice(0,n).reduce((x,y)=>x+y,0)/n; o[n-1]=a;
+  for(let i=n;i<tr.length;i++){ a=(a*(n-1)+tr[i])/n; o[i]=a; }
+  return o;
+}
+function rsiArr(a,n=14){
+  const o=new Array(a.length).fill(null); let g=0,l=0;
+  for(let i=1;i<a.length;i++){
+    const d=a[i]-a[i-1], gg=Math.max(d,0), ll=Math.max(-d,0);
+    if(i<=n){ g+=gg; l+=ll; if(i===n){ g/=n; l/=n; o[i]=100-100/(1+g/(l||1e-12)); } }
+    else { g=(g*(n-1)+gg)/n; l=(l*(n-1)+ll)/n; o[i]=100-100/(1+g/(l||1e-12)); }
+  }
+  return o;
+}
+function macdArr(a,f=12,s=26,sig=9){
+  const ef=ema(a,f), es=ema(a,s);
+  const line=a.map((_,i)=>ef[i]-es[i]);
+  const signal=ema(line,sig);
+  return { line, signal, hist: line.map((v,i)=>v-signal[i]) };
+}
+function adxArr(ks,n=14){
+  const tr=[],pdm=[],ndm=[];
+  for(let i=1;i<ks.length;i++){
+    const up=ks[i].high-ks[i-1].high, dn=ks[i-1].low-ks[i].low;
+    pdm.push(up>dn&&up>0?up:0); ndm.push(dn>up&&dn>0?dn:0);
+    tr.push(Math.max(ks[i].high-ks[i].low, Math.abs(ks[i].high-ks[i-1].close), Math.abs(ks[i].low-ks[i-1].close)));
+  }
+  // 返回数组长度恒等于 ks.length（和 K 线下标一一对应），算不出来的位置是 null/undefined，调用方用 == null 判断
+  if(tr.length < n*3) return new Array(ks.length).fill(null);
+  const sm=(arr)=>{ const o=[]; let s=arr.slice(0,n).reduce((x,y)=>x+y,0); o[n-1]=s; for(let i=n;i<arr.length;i++){ s=s-s/n+arr[i]; o[i]=s; } return o; };
+  const T=sm(tr),P=sm(pdm),N=sm(ndm);
+  const dx=[];
+  for(let i=0;i<T.length;i++){ if(T[i]==null) continue; const p=(P[i]/T[i])*100, m=(N[i]/T[i])*100; dx[i]=(Math.abs(p-m)/(p+m||1))*100; }
+  const o=[]; let a=dx.slice(n*2-1,n*3-1).reduce((x,z)=>x+z,0)/n; o[n*3-2]=a;
+  for(let i=n*3-1;i<dx.length;i++){ a=(a*(n-1)+dx[i])/n; o[i]=a; }
+  // TR/DM 从第 2 根 K 线起算，o 比 ks 少一个元素；在最前面补一个 null 对齐
+  return [null, ...o];
+}
+
+// ================= 取数 =================
+async function get(path, base=FAPI){
+  const r = await fetch(base+path, { signal: AbortSignal.timeout(15000) });
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  return r.json();
+}
+let pxCache = { t:0, data:{} };
+async function prices(){
+  if(Date.now()-pxCache.t < 2500) return pxCache.data;
+  const out = {};
+  await Promise.all(SYMS.map(async s=>{
+    try{ out[s] = +(await get(`/fapi/v1/ticker/price?symbol=${s}`)).price; }catch{}
+    if(!isFinite(out[s])){
+      try{ out[s] = +(await get(`/api/v3/ticker/price?symbol=${s}`, SAPI)).price; }catch{}
+    }
+  }));
+  if(Object.keys(out).length){ pxCache={t:Date.now(),data:out}; }
+  return pxCache.data;
+}
+async function klines(sym, iv, limit){
+  let raw;
+  try{ raw = await get(`/fapi/v1/klines?symbol=${sym}&interval=${iv}&limit=${limit}`); }catch(e){ raw = e; }
+  if(!Array.isArray(raw)){
+    const r2 = await get(`/api/v3/klines?symbol=${sym}&interval=${iv}&limit=${limit}`, SAPI);
+    if(!Array.isArray(r2)) throw new Error('K 线取数失败');
+    raw = r2;
+  }
+  return raw.map(x=>({ time:Math.floor(+x[0]/1000), open:+x[1], high:+x[2], low:+x[3], close:+x[4], volume:+x[5] }));
+}
+async function atrOf(sym){
+  try{ const ks = await klines(sym,'1d',40); const at = atrArr(ks,14); const a = at[at.length-1]; return isFinite(a)&&a>0 ? a : null; }catch{ return null; }
+}
+
+// ================= 交易逻辑（与服务器版一致）=================
+function leveragePlan(sym,side,px,stop,levOverride){
+  const levRaw = (isFinite(levOverride)&&levOverride>0) ? levOverride : (ST.account.leverage||20);
+  let lev = Math.min(levRaw, LEV_MAX);
+  const liqAt = (l)=> side==='long' ? px*(1-1/l+MMR) : px*(1+1/l-MMR);
+  const ok = (l)=> side==='long' ? liqAt(l) <= stop*0.99 : liqAt(l) >= stop*1.01;
+  while(!ok(lev) && lev>1) lev -= 1;
+  return { lev, liqAt, ok, levRaw };
+}
+function createPosition({sym,side,px,atr,stopPrice,targetR=3,levOverride=null,slipPct=0}){
+  if(!SYMS.includes(sym)||!['long','short'].includes(side)) return {error:'参数错误'};
+  if(ST.positions.length >= ST.account.maxPos) return {error:`已达最大持仓 ${ST.account.maxPos}`};
+  if(ST.positions.some(p=>p.sym===sym)) return {error:`${sym} 已有持仓，v4 规定同一标的不重复开仓`};
+  if(!isFinite(px)||px<=0) return {error:`${sym} 暂时取不到价格`};
+  if(!isFinite(atr)||atr<=0) return {error:'ATR 数据不足'};
+
+  const dir = side==='long'?1:-1;
+  const stop = (isFinite(stopPrice)&&stopPrice>0) ? stopPrice : px - dir*1.5*atr;
+  if(side==='long' && stop>=px) return {error:`多单止损 ${stop} 必须低于入场 ${px}`};
+  if(side==='short' && stop<=px) return {error:`空单止损 ${stop} 必须高于入场 ${px}`};
+
+  const riskUsd = ST.account.equity*ST.account.riskPct/100;
+  const dist = Math.abs(px-stop);
+  const qty = Math.floor((riskUsd/dist)*100000)/100000;
+  if(!isFinite(qty)||qty<=0) return {error:'数量过小'};
+
+  const {lev,liqAt,ok,levRaw} = leveragePlan(sym,side,px,stop,levOverride);
+  if(!ok(lev)) return {error:`止损 ${stop.toFixed(2)} 离入场太远，任何杠杆下强平都会先于止损；请缩小止损`};
+
+  const liq = +liqAt(lev).toFixed(2);
+  const warn = lev < Math.min(levRaw,LEV_MAX)
+    ? `杠杆自动从 ${Math.min(levRaw,LEV_MAX)}x 降到 ${lev}x：原档位强平会先于止损触发`
+    : (side==='short' ? 'v4 只做多，此为练习单' : '');
+
+  const p = {
+    id: ST.seq++, sym, side, qty,
+    entry:+px.toFixed(2), stop:+stop.toFixed(2),
+    target:+(px + dir*targetR*Math.abs(px-stop)).toFixed(2),
+    leverage:lev, margin:+(qty*px/lev).toFixed(2), liq,
+    entrySlipPct:+Number(slipPct||0).toFixed(4),
+    practice:false, openedAt:new Date().toISOString()
+  };
+  ST.positions.push(p);
+  if(!saveState()){
+    // 没存上就当没开：撤回持仓并还原编号
+    ST.positions.pop(); ST.seq = p.id;
+    return { error:'保存失败，未开仓', saveFailed:true };
+  }
+  return { position:p, warn, atr };
+}
+function pnlOf(p,px){ const dir=p.side==='long'?1:-1; return (px-p.entry)*p.qty*dir; }
+
+async function closePos(id,px){
+  const i = ST.positions.findIndex(p=>p.id===id);
+  if(i<0) return {error:'找不到持仓'};
+  if(!isFinite(px)||px<=0) return {error:'暂时取不到价格，未平仓'};
+  const p = ST.positions[i];
+  const gross = pnlOf(p,px);
+  const notional = ((p.entry+px)/2)*p.qty;
+  const feeBps = ST.account.feeBps==null?5:ST.account.feeBps;
+  const fee = notional*(feeBps/10000)*2;
+  // 资金费
+  let funding = 0;
+  try{
+    const pi = await get(`/fapi/v1/premiumIndex?symbol=${p.sym}`);
+    const rate = +pi.lastFundingRate;
+    const periods = Math.max(0, Math.floor((Date.now()-new Date(p.openedAt).getTime())/(8*3600e3)));
+    funding = (p.side==='long'?1:-1)*p.entry*p.qty*rate*periods;
+  }catch{}
+  const realized = gross - fee - funding;
+  // 先留快照：保存失败时整笔回滚，保证"扣了钱就一定有记录"
+  const snap = { equity:ST.account.equity, history:ST.history.slice() };
+  ST.account.equity += realized;
+  ST.history.unshift({
+    id:p.id, sym:p.sym, side:p.side, entry:p.entry, exit:+px.toFixed(2), qty:p.qty,
+    pnl:+realized.toFixed(2), gross:+gross.toFixed(2), fee:+fee.toFixed(2), funding:+funding.toFixed(2),
+    entrySlipPct:p.entrySlipPct, exitSlipPct:0, reason:'manual',
+    openedAt:p.openedAt, closedAt:new Date().toISOString()
+  });
+  if(ST.history.length>HISTORY_MAX) ST.history.length = HISTORY_MAX;
+  ST.positions.splice(i,1);
+  if(!saveState()){
+    ST.account.equity = snap.equity;
+    ST.history = snap.history;
+    ST.positions.splice(i,0,p);
+    return {error:'保存失败，未平仓（账户未变动）', saveFailed:true};
+  }
+  return {pnl:realized};
+}
+
+async function tickExits(){
+  if(!ST.positions.length) return;
+  const px = await prices();
+  for(const p of [...ST.positions]){
+    const cur = px[p.sym]; if(!isFinite(cur)) continue;
+    const dir = p.side==='long'?1:-1;
+    let hit=null, fill=null;
+    if(p.liq && ((dir>0&&cur<=p.liq)||(dir<0&&cur>=p.liq))){ hit='liq'; fill = dir>0?Math.min(cur,p.liq):Math.max(cur,p.liq); }
+    else if((dir>0&&cur<=p.stop)||(dir<0&&cur>=p.stop)){ hit='stop'; fill = dir>0?Math.min(cur,p.stop):Math.max(cur,p.stop); }
+    else if((dir>0&&cur>=p.target)||(dir<0&&cur<=p.target)){ hit='target'; fill=p.target; }
+    else if(Date.now()-new Date(p.openedAt).getTime() >= MAX_HOLD_MS){ hit='time'; fill=cur; }
+    if(hit){ await closePos(p.id, fill); }
+  }
+}
+
+async function tickOrders(){
+  if(!ST.orders.length) return;
+  const px = await prices();
+  const keep=[]; let changed=false;
+  const logIt=(o,status,note)=>{ ST.orderLog.unshift({at:new Date().toISOString(),sym:o.sym,side:o.side,price:o.price,status,note}); if(ST.orderLog.length>30) ST.orderLog.length=30; };
+  for(const o of [...ST.orders]){
+    const cur = px[o.sym]; if(!isFinite(cur)){ keep.push(o); continue; }
+    if(o.expiresAt && Date.now()>Date.parse(o.expiresAt)){ logIt(o,'expired','超过有效期自动撤销'); changed=true; continue; }
+    const hit = o.side==='long' ? cur<=o.price : cur>=o.price;
+    if(!hit){ keep.push(o); continue; }
+    const fillPx = o.side==='long' ? Math.min(o.price,cur) : Math.max(o.price,cur);
+    const atr = await atrOf(o.sym);
+    const r = createPosition({sym:o.sym, side:o.side, px:fillPx, atr, stopPrice:o.stop, targetR:o.targetR, levOverride:o.leverage});
+    if(r.saveFailed){ keep.push(o); continue; } // 存储写不进去：挂单留着，下个周期再试，别当成被拒绝
+    logIt(o, r.error?'rejected':'filled', r.error || `成交 ${r.position.entry}，止损 ${r.position.stop}，${r.position.leverage}x`);
+    changed=true;
+  }
+  ST.orders = keep;
+  if(changed) saveState();
+}
+
+// ================= 图表 =================
+function initChart(){
+  const opt = { layout:{background:{color:'#12151c'},textColor:'#aeb6c4',fontSize:11},
+    grid:{vertLines:{color:'#1a1f28'},horzLines:{color:'#1a1f28'}},
+    rightPriceScale:{borderColor:'#242a36'}, timeScale:{borderColor:'#242a36',timeVisible:true},
+    crosshair:{mode:0} };
+  chart = LightweightCharts.createChart($('chart'), Object.assign({height:380}, opt));
+  series.candle = chart.addCandlestickSeries({upColor:'#26a69a',downColor:'#ef5350',borderVisible:false,wickUpColor:'#26a69a',wickDownColor:'#ef5350'});
+  series.ema20 = chart.addLineSeries({color:'#e0b34a',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  series.ema50 = chart.addLineSeries({color:'#6fa8ff',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  series.ema200= chart.addLineSeries({color:'#c07cff',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+
+  volChart = LightweightCharts.createChart($('vol'), Object.assign({height:70}, opt, {timeScale:{visible:false},rightPriceScale:{borderColor:'#242a36'}}));
+  series.vol = volChart.addHistogramSeries({priceFormat:{type:'volume'}});
+  rsiChart = LightweightCharts.createChart($('rsi'), Object.assign({height:90}, opt, {timeScale:{visible:false},rightPriceScale:{borderColor:'#242a36'}}));
+  series.rsi = rsiChart.addLineSeries({color:'#f0b90b',lineWidth:1});
+  series.rsi.createPriceLine({price:70,color:'#5a2b2b',lineWidth:1,lineStyle:2,axisLabelVisible:false});
+  series.rsi.createPriceLine({price:30,color:'#1f5a50',lineWidth:1,lineStyle:2,axisLabelVisible:false});
+  macdChart = LightweightCharts.createChart($('macd'), Object.assign({height:100}, opt, {rightPriceScale:{borderColor:'#242a36'}}));
+  series.macdHist = macdChart.addHistogramSeries({});
+  series.macdLine = macdChart.addLineSeries({color:'#6fa8ff',lineWidth:1});
+  series.macdSig  = macdChart.addLineSeries({color:'#e0b34a',lineWidth:1});
+
+  // 四个图联动：时间轴 + 十字光标。任何一个被拖动/缩放，其余三个跟着走
+  panes = [
+    { chart,    ser:series.candle,   off:0, vals:new Map() },
+    { chart:volChart,  ser:series.vol,      off:0, vals:new Map() },
+    { chart:rsiChart,  ser:series.rsi,      off:0, vals:new Map() },
+    { chart:macdChart, ser:series.macdLine, off:0, vals:new Map() },
+  ];
+  for(const p of panes){
+    p.chart.timeScale().subscribeVisibleLogicalRangeChange((r)=>syncRange(p, r));
+    p.chart.subscribeCrosshairMove((param)=>syncCrosshair(p, param));
+  }
+}
+
+// ---- 图表联动 ----
+// off = 该图第一根数据在全局 K 线序列里的下标。RSI 前 14 根没有值，所以 RSI 图的"逻辑下标 0"
+// 对应的是第 14 根 K 线；换算成全局下标 = 本图下标 + off，不换算的话副图会整体错位 14 根。
+let panes = [], syncLock = false, xhLock = false;
+function syncRange(src, r){
+  if(!r || syncLock) return;
+  syncLock = true;
+  try{
+    const gFrom = r.from + src.off, gTo = r.to + src.off;
+    for(const p of panes){
+      if(p===src) continue;
+      const t = { from:gFrom-p.off, to:gTo-p.off };
+      const cur = p.chart.timeScale().getVisibleLogicalRange();
+      // 已经一致就不再设置：既省事，也能挡住"设置 → 触发回调 → 又设置回来"的回环
+      if(cur && Math.abs(cur.from-t.from)<0.05 && Math.abs(cur.to-t.to)<0.05) continue;
+      p.chart.timeScale().setVisibleLogicalRange(t);
+    }
+  }catch(e){ console.warn('syncRange', e); }
+  finally{ syncLock = false; }
+}
+function syncCrosshair(src, param){
+  if(xhLock) return;
+  // 每个图记住自己当前的十字光标时间：已经在那个时间了就不再设置。
+  // setCrosshairPosition 会反过来触发对方的 crosshairMove 回调，没有这道判断就会 A→B→A→… 无限回环
+  const t = (param && param.time!==undefined) ? param.time : null;
+  src.xhTime = t;
+  xhLock = true;
+  try{
+    for(const p of panes){
+      if(p===src || p.xhTime===t) continue;
+      p.xhTime = t;
+      const v = t!==null ? p.vals.get(t) : undefined;
+      if(v==null){ if(p.chart.clearCrosshairPosition) p.chart.clearCrosshairPosition(); continue; }
+      if(p.chart.setCrosshairPosition) p.chart.setCrosshairPosition(v, t, p.ser);
+    }
+  }catch(e){ console.warn('syncCrosshair', e); }
+  finally{ xhLock = false; }
+}
+function clearLines(){ priceLines.forEach(l=>{ try{ series.candle.removePriceLine(l); }catch{} }); priceLines=[]; }
+function drawLines(){
+  clearLines();
+  for(const p of ST.positions){
+    if(p.sym!==SYM) continue;
+    const add=(price,color,title,style)=>priceLines.push(series.candle.createPriceLine({price,color,lineWidth:1,lineStyle:style||0,axisLabelVisible:true,title}));
+    add(p.entry,'#ffffff','开仓 '+p.entry);
+    add(p.stop,'#ef5350','止损 '+p.stop);
+    add(p.target,'#26a69a','目标 '+p.target);
+    if(p.liq) add(p.liq,'#c07cff','强平 '+p.liq,2);
+  }
+  for(const o of ST.orders){
+    if(o.sym!==SYM) continue;
+    priceLines.push(series.candle.createPriceLine({price:o.price,color:'#f0b90b',lineWidth:1,lineStyle:1,axisLabelVisible:true,title:'挂单 '+o.price}));
+  }
+}
+// 上一次成功渲染的币种+周期与 K 线：用来判断"这是同一张图的定时刷新"还是"用户切了币/周期"
+let lastKey = null, lastKs = null;
+async function loadChart(){
+  const sym = SYM, iv = IV, key = sym+'|'+iv;
+  try{
+    const ks = await klines(sym, iv, 400);
+    if(sym!==SYM || iv!==IV) return; // 等数据期间用户已经切走了，这份是过期结果，丢掉
+    // 只有"同一币种+周期的刷新"才保留视图；切币种/切周期照旧回到最右边
+    const saved = (key===lastKey && lastKs) ? chart.timeScale().getVisibleLogicalRange() : null;
+
+    const closes = ks.map(k=>k.close);
+    const e20=ema(closes,20), e50=ema(closes,50), e200=ema(closes,Math.min(200,Math.max(2,closes.length-1)));
+    const rsi=rsiArr(closes,14), macd=macdArr(closes), at=atrArr(ks,14);
+    series.candle.setData(ks.map(k=>({time:k.time,open:k.open,high:k.high,low:k.low,close:k.close})));
+    const line=(arr)=>ks.map((k,i)=> arr[i]==null?null:{time:k.time,value:+arr[i]}).filter(Boolean);
+    const rsiData = line(rsi), macdLineData = line(macd.line);
+    series.ema20.setData(line(e20)); series.ema50.setData(line(e50)); series.ema200.setData(line(e200));
+    series.vol.setData(ks.map(k=>({time:k.time,value:k.volume,color:k.close>=k.open?'#26a69a66':'#ef535066'})));
+    series.rsi.setData(rsiData);
+    series.macdHist.setData(ks.map((k,i)=>({time:k.time,value:+macd.hist[i],color:macd.hist[i]>=0?'#26a69a88':'#ef535088'})));
+    series.macdLine.setData(macdLineData); series.macdSig.setData(line(macd.signal));
+
+    // 联动所需：各图第一根数据在 K 线序列里的位置（RSI 前 14 根为空）+ 十字光标同步用的 时间→值 表
+    const firstIdx = (d)=> d.length ? Math.max(0, ks.findIndex(k=>k.time===d[0].time)) : 0;
+    panes[0].off = 0;
+    panes[1].off = 0;
+    panes[2].off = firstIdx(rsiData);
+    panes[3].off = firstIdx(macdLineData);
+    panes[0].vals = new Map(ks.map(k=>[k.time,k.close]));
+    panes[1].vals = new Map(ks.map(k=>[k.time,k.volume]));
+    panes[2].vals = new Map(rsiData.map(d=>[d.time,d.value]));
+    panes[3].vals = new Map(macdLineData.map(d=>[d.time,d.value]));
+
+    // 恢复定时刷新前的视图。新根出现时最老一根被挤掉，下标整体左移，所以按"旧最后一根 K 线现在在哪"换算
+    if(saved && lastKs.length){
+      const j = ks.findIndex(k=>k.time===lastKs[lastKs.length-1].time);
+      if(j>=0){
+        const following = saved.to >= lastKs.length-1-0.5; // 原本就贴着最新一根：继续贴着，不要被留在后面
+        const d = following ? 0 : j-(lastKs.length-1);
+        const r = { from:saved.from+d, to:saved.to+d };
+        chart.timeScale().setVisibleLogicalRange(r);
+        syncRange(panes[0], r);
+      }
+    }
+    lastKey = key; lastKs = ks;
+
+    // 副图状态栏（跟随当前周期，只用于看盘；v4 判定始终用日线，见 loadV4）
+    const i = ks.length-1;
+    const atrPct = at[i]/ks[i].close*100;
+    $('stats').innerHTML = `
+      <span class="muted">图表周期</span>
+      <span>${SYM.replace('USDT','')} <b>${IV}</b> <b>${fmt(ks[i].close)}</b></span>
+      <span>ATR<sub>${IV}</sub> <b>${isFinite(atrPct)?atrPct.toFixed(2)+'%':'—'}</b></span>
+      <span>RSI<sub>${IV}</sub> <b>${rsi[i]?.toFixed(1)??'—'}</b></span>
+      <span>EMA50<sub>${IV}</sub> <b>${fmt(e50[i],0)}</b></span>
+      <span>EMA200<sub>${IV}</sub> <b>${fmt(e200[i],0)}</b></span>`;
+
+    // v4 信号标记只在日线图上画（时间戳才对得上）
+    series.candle.setMarkers(IV==='1d' && V4.markers ? V4.markers : []);
+    drawLines();
+  }catch(e){ msg('图表加载失败：'+e.message); }
+}
+
+// v4 判定：固定用日线，不随图表周期变化
+let V4 = { markers:null, last:null };
+async function loadV4(){
+  try{
+    const ks = await klines(SYM, '1d', 400);
+    const closes = ks.map(k=>k.close);
+    const e50 = ema(closes,50), e200 = ema(closes,Math.min(200,Math.max(2,closes.length-1)));
+    const ad = adxArr(ks,14), at = atrArr(ks,14);
+    const markers=[];
+    for(let i=210;i<ks.length-1;i++){
+      const a = ad[i], t = at[i];
+      if(a==null||t==null) continue;
+      const atrPct = t/ks[i].close*100;
+      const ok = a>30 && ks[i].close>e50[i] && ks[i].close>e200[i] && e50[i]>e50[i-20] && atrPct>=2 && atrPct<=6;
+      if(ok) markers.push({time:ks[i].time,position:'belowBar',color:'#f0b90b',shape:'arrowUp',text:'v4'});
+    }
+    V4.markers = markers.slice(-40);
+
+    // 2026-11-24：与服务端 /api/v4 对齐——判定用「上一根已收盘的日线」，
+    // 不用正在走的那根（盘中会来回翻），所以两版的 v4 读数现在一定一致。
+    const i = Math.max(1, ks.length-2);
+    const adx = ad[i], t = at[i];
+    const atrPct = t/ks[i].close*100;
+    const conds = [
+      ['ADX>30', adx>30, adx==null?'—':adx.toFixed(1)],
+      ['价>EMA50', ks[i].close>e50[i], fmt(e50[i],0)],
+      ['价>EMA200', ks[i].close>e200[i], fmt(e200[i],0)],
+      ['EMA50↑', e50[i]>e50[i-20], ''],
+      ['ATR 2–6%', atrPct>=2&&atrPct<=6, atrPct.toFixed(2)+'%'],
+    ];
+    const pass = conds.filter(c=>c[1]).length;
+    V4.ctx = { conds, pass, adx, atr:t, atrPct, e50:e50[i], e200:e200[i], close:ks[i].close };
+    V4.atr = t; V4.pass = pass; V4.ks = ks;
+    $('lights').innerHTML = `<span class="muted" style="font-size:11px;align-self:center">v4 判定（日线 · 按上一根已收盘）：</span>`
+      + conds.map(([n,ok,v])=>
+        `<span class="light ${ok?'ok':'no'}">${ok?'✓':'✗'} ${n}${v?' · '+v:''}</span>`).join('')
+      + `<span class="light ${pass===5?'ok':'no'}">${pass}/5 ${pass===5?'· 可开仓':'· 不开仓'}</span>`;
+    if(IV==='1d') series.candle.setMarkers(V4.markers);
+  }catch(e){ $('lights').innerHTML = `<span class="light no">v4 判定失败：${e.message}</span>`; }
+}
+
+// ================= 渲染 =================
+function render(){
+  const eq = ST.account.equity;
+  const upnl = ST.positions.reduce((a,p)=>a+(isFinite(PX[p.sym])?pnlOf(p,PX[p.sym]):0),0);
+  $('equity').textContent = '$'+fmt(eq+upnl);
+  const chg = (eq+upnl)/ST.account.start-1;
+  const fees = ST.history.reduce((a,h)=>a+(h.fee||0),0);
+  $('equitySub').innerHTML = `起始 $${fmt(ST.account.start,0)} ｜ 累计 <span class="${chg>=0?'up':'down'}">${chg>=0?'+':''}${fmt(chg*100)}%</span> ｜ 手续费 -$${fmt(fees)} ｜ 浮动 ${upnl>=0?'+':''}${fmt(upnl)}`;
+  $('riskPct').value = ST.account.riskPct;
+  $('maxPos').value = ST.account.maxPos;
+  $('leverage').value = ST.account.leverage;
+  $('feeBps').value = ST.account.feeBps;
+
+  $('positions').innerHTML = ST.positions.length ? ST.positions.map(p=>{
+    const cur = PX[p.sym], up = isFinite(cur)?pnlOf(p,cur):0;
+    return `<tr>
+      <td>${p.sym.replace('USDT','')}</td>
+      <td><span class="pill ${p.side}">${p.side==='long'?'多':'空'}</span></td>
+      <td>${p.qty}</td><td>${fmt(p.entry)}</td>
+      <td class="down">${fmt(p.stop)}</td>
+      <td class="down">${p.liq?fmt(p.liq):'—'}</td>
+      <td class="${up>=0?'up':'down'}">${up>=0?'+':''}${fmt(up)}</td>
+      <td><button class="ghost" onclick="doClose(${p.id})">平</button></td></tr>`;
+  }).join('') : '<tr><td colspan="8" class="muted">无持仓</td></tr>';
+
+  const ords = ST.orders;
+  $('ordCount').textContent = ords.length ? `（${ords.length}）` : '';
+  $('orders').innerHTML = ords.length ? ords.map(o=>{
+    const cur = PX[o.sym];
+    const dist = isFinite(cur) ? ((cur-o.price)/o.price*100).toFixed(2) : null;
+    return `<tr>
+      <td>${o.sym.replace('USDT','')}</td>
+      <td><span class="pill ${o.side}">${o.side==='long'?'多':'空'}</span></td>
+      <td>${fmt(o.price)}</td>
+      <td class="muted">${dist==null?'—':(dist>=0?'+':'')+dist+'%'}</td>
+      <td class="muted">${o.stop?fmt(o.stop):'ATR'}</td>
+      <td>${o.leverage?o.leverage+'x':'默认'}</td>
+      <td>${o.targetR||3}R</td>
+      <td><button class="ghost" onclick="cancelOrder(${o.id})">撤</button></td></tr>`;
+  }).join('') : '<tr><td colspan="8" class="muted">无挂单</td></tr>';
+
+  $('orderLog').innerHTML = (ST.orderLog||[]).slice(0,5).map(l=>{
+    const lab = {filled:'成交',expired:'过期',rejected:'拒绝',cancelled:'撤销'}[l.status]||l.status;
+    return `<div class="${l.status==='filled'?'up':'muted'}">${(l.at||'').slice(5,16).replace('T',' ')} ${l.sym.replace('USDT','')} ${l.side==='long'?'多':'空'} @${fmt(l.price)} — ${lab}：${l.note||''}</div>`;
+  }).join('');
+
+  $('history').innerHTML = ST.history.length ? ST.history.slice(0,30).map(h=>`
+    <tr><td class="muted">${(h.closedAt||'').slice(5,16).replace('T',' ')}</td>
+      <td>${h.sym.replace('USDT','')}</td>
+      <td><span class="pill ${h.side}">${h.side==='long'?'多':'空'}</span></td>
+      <td class="${h.pnl>=0?'up':'down'}">${h.pnl>=0?'+':''}${fmt(h.pnl)}</td>
+      <td class="muted">${h.fee!=null?'-'+fmt(h.fee):'—'}</td>
+      <td class="muted">${h.funding!=null?fmt(h.funding,2):'—'}</td>
+      <td class="muted">${({stop:'止损',target:'止盈',time:'到期',liq:'强平',manual:'手动'})[h.reason]||'手动'}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="muted">暂无</td></tr>';
+}
+
+// ================= 爆仓热力图 =================
+let liqWS = null, liqPrints = [], wsOk = false;
+function startLiqWS(){
+  try{
+    liqWS = new WebSocket('wss://fstream.binance.com/ws/!forceOrder@arr');
+    liqWS.onopen = ()=>{ wsOk=true; };
+    liqWS.onmessage = (ev)=>{
+      try{
+        const m = JSON.parse(ev.data);
+        const o = m.o || (m.data && m.data.o);
+        if(!o || !SYMS.includes(o.s)) return;
+        liqPrints.push({ t:+o.T, sym:o.s, price:+(o.ap||o.p), side:o.S==='SELL'?'long':'short', usd:(+o.q)*(+(o.ap||o.p)) });
+        if(liqPrints.length>5000) liqPrints.splice(0,liqPrints.length-5000);
+      }catch{}
+    };
+    liqWS.onerror = ()=>{ wsOk=false; };
+    liqWS.onclose = ()=>{ wsOk=false; setTimeout(startLiqWS,5000); };
+  }catch{ setTimeout(startLiqWS,10000); }
+}
+async function renderLiq(){
+  try{
+    const px = PX[SYM];
+    if(!isFinite(px)){ $('liqList').textContent='取不到价格'; return; }
+    let oiUsd = 0;
+    try{ const oi = await get(`/fapi/v1/openInterest?symbol=${SYM}`); oiUsd = (+oi.openInterest)*px; }catch{}
+    const tiers=[{lev:100,share:.05},{lev:50,share:.15},{lev:25,share:.25},{lev:10,share:.35},{lev:5,share:.20}];
+    const lv=[];
+    for(const t of tiers){ const d=1/t.lev;
+      lv.push({side:'long',lev:t.lev,price:px*(1-d),usd:oiUsd*t.share});
+      lv.push({side:'short',lev:t.lev,price:px*(1+d),usd:oiUsd*t.share});
+    }
+    lv.sort((a,b)=>a.price-b.price);
+    const real = liqPrints.filter(p=>p.sym===SYM).slice(-5).reverse();
+    const maxUsd = Math.max(...lv.map(l=>l.usd), 1);
+    $('liqNote').textContent = `估算 · WS ${wsOk?'在线':'离线'} · 真实强平 ${liqPrints.filter(p=>p.sym===SYM).length} 条`;
+    $('liqList').innerHTML = lv.map(l=>{
+      const w = Math.max(2, (l.usd/maxUsd)*100);
+      const isLong = l.side==='long';
+      return `<div class="lvl">
+        <div class="lvlrow">
+          <span class="${isLong?'down':'up'}">${isLong?'多':'空'} ${l.lev}x · ${fmt(l.price,0)}</span>
+          <span class="muted">${fmt(l.usd/1e6,0)} M</span>
+        </div>
+        <div class="lvlbar"><i style="width:${w.toFixed(1)}%;background:${isLong?'#ef5350':'#26a69a'}"></i></div>
+      </div>`;
+    }).join('')
+      + (real.length ? '<div class="muted" style="margin-top:6px;font-size:11px">最近真实强平：'+real.map(r=>`${fmt(r.price,0)} ${r.side==='long'?'多':'空'} $${fmt(r.usd/1000,0)}k`).join(' · ')+'</div>' : '');
+  }catch(e){ $('liqList').textContent='加载失败：'+e.message; }
+}
+
+// ================= 问一句（纯本地计算，不做投资建议）=================
+const CHIPS = ['我还能开几单','我的强平在哪','止损是几个 ATR','v4 缺哪几条','上次 v4 信号','1R 是多少钱','挂单还差多少','手续费多少','现在跌了多少'];
+
+function chipInit(){
+  $('qChips').innerHTML = CHIPS.map(c=>`<span class="chip" onclick="doAsk('${c}')">${c}</span>`).join('');
+}
+function doAsk(q){
+  const input = $('qInput');
+  const text = (q || input.value || '').trim();
+  if(!text) return;
+  if(q) input.value = q;
+  $('qAns').innerHTML = ask(text);
+}
+
+function ask(raw){
+  const t = raw.toLowerCase().replace(/\s+/g,'');
+  const h = (...ws)=> ws.some(w=> t.includes(w));
+  const pos = ST.positions, ords = ST.orders;
+  const eq = ST.account.equity;
+  const riskUsd = eq * ST.account.riskPct / 100;
+  const pxOf = (s)=> PX[s];
+
+  // —— 第一道闸：拒绝预测和替人决定 ——
+  if(h('该不该','要不要','能买吗','能开吗','会不会涨','会不会跌','会涨吗','做多还是做空','推荐','建议')){
+    return `<b class="down">这个问题我不回答。</b><br>
+      我的职责是报事实，不是替你判断。<br>
+      v4 只认五条硬条件，现在是 <b>${V4.pass ?? '—'}/5</b>。条件够了就是够了，不够我也说不出花来。<br>
+      <span class="muted">想复核事实可以问：v4 缺哪几条 / 我的强平在哪 / 1R 是多少钱</span>`;
+  }
+
+  // 强平
+  if(h('强平','爆仓','清算')){
+    if(!pos.length) return '当前没有持仓，没有强平价。<br><span class="muted">强平价只在开仓后才有。</span>';
+    return pos.map(p=>{
+      const cur = pxOf(p.sym);
+      const d = isFinite(cur)&&p.liq ? ((cur-p.liq)/cur*100) : null;
+      return `<b>${p.sym.replace('USDT','')} ${p.side==='long'?'多':'空'}</b>：强平 <b class="down">${fmt(p.liq)}</b>` +
+        (d!=null ? `，现价 ${fmt(cur)}，还差 <b>${fmt(d)}%</b>（${p.leverage}x）` : '') +
+        `<br><span class="muted">止损在 ${fmt(p.stop)}，止损比强平更近 → ${p.stop>p.liq?'先触碰止损':'先爆仓'}。</span>`;
+    }).join('<br><br>');
+  }
+
+  // 止损 / 几个 ATR
+  if(h('止损') || h('几个atr') || h('几倍atr') || h('atr倍')){
+    if(!pos.length) return '当前没有持仓，没有止损价。';
+    const atr = V4.atr;
+    return pos.map(p=>{
+      const dist = Math.abs(p.entry-p.stop);
+      const r = atr ? (dist/atr).toFixed(2) : '—';
+      return `<b>${p.sym.replace('USDT','')}</b>：入场 ${fmt(p.entry)} → 止损 <b class="down">${fmt(p.stop)}</b><br>
+        距离 ${fmt(dist)}，占入场 <b>${fmt(dist/p.entry*100)}%</b>` +
+        (atr ? `，等于 <b>${r}×ATR</b>（日线 ATR ${fmt(atr,0)}）` : '') +
+        `<br><span class="muted">按 1R = ${fmt(riskUsd,2)} 美元反推，数量 ${p.qty}。</span>`;
+    }).join('<br><br>');
+  }
+
+  // v4 条件
+  if(h('v4','缺哪','条件','满足','开仓吗')){
+    if(!V4.ctx) return 'v4 数据还没加载完，等两秒再问。';
+    const c = V4.ctx;
+    const rows = c.conds.map(([n,ok,v])=>`${ok?'<span class="up">✓</span>':'<span class="down">✗</span>'} ${n}${v?' · '+v:''}`).join('<br>');
+    return `<b>v4 判定（固定日线）：${c.pass}/5</b><br>${rows}<br><br>
+      <span class="muted">${c.pass===5 ? '五条全满足 → 按规则可以开多。' : `还差 ${5-c.pass} 条，按规则不开仓。`}</span>`;
+  }
+
+  // 上次信号
+  if(h('信号','触发过','上次')){
+    if(!V4.markers || !V4.markers.length) return '日线近 400 根里没有出现过完整的 v4 信号。';
+    const last = V4.markers[V4.markers.length-1];
+    const d = new Date(last.time*1000);
+    const bar = V4.ks ? V4.ks.find(k=>k.time===last.time) : null;
+    return `上次 v4 信号：<b>${d.toISOString().slice(0,10)}</b>` +
+      (bar ? `，当根收盘 ${fmt(bar.close)}` : '') +
+      `<br><span class="muted">共 ${V4.markers.length} 个（只显示最近 40 个箭头）。切到 1d 图能看到它们。</span>`;
+  }
+
+  // 还能开几单
+  if(h('几单','几个仓','还能开','仓位上限','满仓')){
+    const left = ST.account.maxPos - pos.length;
+    return `最多持仓 <b>${ST.account.maxPos}</b>，已有 <b>${pos.length}</b> 个，还能开 <b>${left}</b> 个。` +
+      (left<=0 ? '<br><span class="down">已满仓，必须先平掉一个。</span>' : '') +
+      `<br><span class="muted">同一标的不能重复开仓（v4 规则）。</span>`;
+  }
+
+  // 1R
+  if(h('1r','风险单位','一r')){
+    return `1R = 单笔愿意亏的钱 = 账户 ${fmt(eq)} × 风险 ${ST.account.riskPct}% = <b>$${fmt(riskUsd,2)}</b>` +
+      `<br><span class="muted">仓位是这样倒算的：数量 = 1R ÷ 止损距离。止损放宽，仓位自动变小。</span>`;
+  }
+
+  // 挂单
+  if(h('挂单','触发','还差')){
+    if(!ords.length) return '当前没有挂单。';
+    return ords.map(o=>{
+      const cur = pxOf(o.sym);
+      if(!isFinite(cur)) return `${o.sym} 取不到现价`;
+      const gap = (cur - o.price)/o.price*100;
+      const expire = o.expiresAt ? new Date(o.expiresAt).toISOString().slice(5,16).replace('T',' ') : '不过期';
+      return `<b>${o.sym.replace('USDT','')} ${o.side==='long'?'多':'空'}</b> 挂 ${fmt(o.price)}，现价 ${fmt(cur)}<br>
+        还差 <b>${fmt(Math.abs(gap))}%</b> ${gap>0?'（需要下跌触发）':'（需要上涨触发）'}｜止损 ${o.stop?fmt(o.stop):'成交时按 ATR'}｜${o.leverage?o.leverage+'x':'默认杠杆'}｜到期 ${expire}`;
+    }).join('<br><br>');
+  }
+
+  // 手续费
+  if(h('手续费','费率','费')){
+    const bps = ST.account.feeBps;
+    const feeSum = ST.history.reduce((a,x)=>a+(x.fee||0),0);
+    const fundSum = ST.history.reduce((a,x)=>a+(x.funding||0),0);
+    return `费率 <b>${bps}‱</b>（单边），开平双边 = ${(bps*2/100).toFixed(2)}%。<br>
+      例：仓位名义价值 $1,000 → 开平共 <b>$${fmt(1000*bps*2/10000,2)}</b>。<br>
+      <span class="muted">历史累计：手续费 $${fmt(feeSum)}，资金费 $${fmt(fundSum)}。</span>`;
+  }
+
+  // 跌幅 / 回撤
+  if(h('跌了多少','回撤','高点多远','离高点')){
+    if(!V4.ks) return '日线还没加载完。';
+    const hi = Math.max(...V4.ks.map(k=>k.high));
+    const cur = V4.ks[V4.ks.length-1].close;
+    return `近 400 天最高 ${fmt(hi)}，现价 <b>${fmt(cur)}</b>，距高点 <b class="down">${fmt((cur/hi-1)*100)}%</b>。` +
+      `<br><span class="muted">这不是历史最高点，只是这 400 根日线里我拉到的范围。</span>`;
+  }
+
+  // 盈亏
+  if(h('盈亏','赚了','亏了','今天','净值','账户')){
+    const upnl = pos.reduce((a,p)=>a+(isFinite(pxOf(p.sym))?pnlOf(p,pxOf(p.sym)):0),0);
+    const realized = ST.history.reduce((a,x)=>a+(x.pnl||0),0);
+    return `账户净值 <b>$${fmt(eq)}</b>（起始 $${fmt(ST.account.start,0)}，${((eq/ST.account.start-1)*100).toFixed(2)}%）<br>
+      已实现 ${realized>=0?'+':''}$${fmt(realized)}｜浮动 ${upnl>=0?'+':''}$${fmt(upnl)}｜成交 ${ST.history.length} 笔`;
+  }
+
+  // 兜底
+  return `我只会算，不会猜。能回答这些：<br>
+    ${['我的强平在哪','止损是几个 ATR','v4 缺哪几条','上次 v4 信号','我还能开几单','1R 是多少钱','挂单还差多少','手续费多少','现在跌了多少','账户盈亏']
+      .map(x=>`· ${x}`).join('<br>')}
+    <br><span class="muted">投资建议类的问题（该不该买、会不会涨）我不回答。</span>`;
+}
+function saveConfig(){
+  const old = Object.assign({}, ST.account);
+  ST.account.riskPct = +$('riskPct').value || 1;
+  ST.account.maxPos = +$('maxPos').value || 3;
+  ST.account.leverage = +$('leverage').value || 20;
+  ST.account.feeBps = +$('feeBps').value;
+  if(!saveState()){ ST.account = old; render(); return; }
+  msg('配置已保存'); render();
+}
+async function openPos(side){
+  try{
+    PX = await prices();
+    const px = PX[SYM]; if(!isFinite(px)) throw new Error('取不到价格');
+    const atr = await atrOf(SYM); if(!atr) throw new Error('ATR 数据不足');
+    const r = createPosition({sym:SYM, side, px, atr});
+    if(r.error) throw new Error(r.error);
+    msg(`${side==='long'?'做多':'做空'} ${SYM} ${r.position.qty} @ ${fmt(r.position.entry)}｜止损 ${fmt(r.position.stop)}｜${r.position.leverage}x${r.warn?'｜⚠️ '+r.warn:''}`);
+    render(); drawLines();
+  }catch(e){ msg('开仓失败：'+e.message); }
+}
+async function doClose(id){
+  try{
+    PX = await prices();
+    const p = ST.positions.find(x=>x.id===id);
+    const r = await closePos(id, PX[p.sym]);
+    if(r.error) throw new Error(r.error);
+    msg('已平仓，盈亏 '+fmt(r.pnl)); render(); drawLines(); loadChart();
+  }catch(e){ msg('平仓失败：'+e.message); }
+}
+async function fillOrderPrice(){
+  PX = await prices();
+  if(isFinite(PX[SYM])) $('ordPrice').value = PX[SYM].toFixed(1);
+  else msg('取不到现价');
+}
+async function placeOrder(side){
+  const price = +$('ordPrice').value;
+  if(!price) return msg('先填挂价');
+  PX = await prices();
+  const cur = PX[SYM];
+  if(!isFinite(cur)) return msg('取不到现价');
+  if(side==='long' && price>=cur) return msg(`买单挂价 ${price} 不低于现价 ${fmt(cur)}，会立即成交；想进场请直接做多`);
+  if(side==='short' && price<=cur) return msg(`卖单挂价 ${price} 不高于现价 ${fmt(cur)}，会立即成交；想进场请直接做空`);
+  if(ST.orders.some(o=>o.sym===SYM&&o.side===side)) return msg(`${SYM} 已有${side==='long'?'多':'空'}单挂单，请先撤销`);
+  const stopRaw = $('ordStop').value;
+  let stop = stopRaw===''?null:+stopRaw;
+  if(stop!=null){
+    if(!isFinite(stop)||stop<=0) return msg('止损无效');
+    if(side==='long'&&stop>=price) return msg('多单止损必须低于挂价');
+    if(side==='short'&&stop<=price) return msg('空单止损必须高于挂价');
+  }
+  const levRaw = $('ordLev').value;
+  let leverage = levRaw===''?null:+levRaw;
+  if(leverage!=null && (!isFinite(leverage)||leverage<1||leverage>125)) return msg('杠杆需在 1–125');
+  const targetR = +$('ordR').value||3;
+  const ttl = $('ordTtl').value===''?24:+$('ordTtl').value;
+  ST.orders.push({ id:ST.seq++, sym:SYM, side, price, stop, targetR, leverage,
+    createdAt:new Date().toISOString(),
+    expiresAt: ttl>0 ? new Date(Date.now()+ttl*3600e3).toISOString() : null });
+  if(!saveState()){ const o = ST.orders.pop(); ST.seq = o.id; return; }
+  render(); drawLines();
+  msg(`已挂${side==='long'?'多':'空'}单 ${SYM} @ ${fmt(price)}｜止损 ${stop?fmt(stop):'成交时按 ATR'}｜杠杆 ${leverage?leverage+'x':'默认'}｜${targetR}R`);
+}
+function cancelOrder(id){
+  const i = ST.orders.findIndex(o=>o.id===id);
+  if(i<0) return msg('找不到挂单');
+  const [o] = ST.orders.splice(i,1);
+  ST.orderLog.unshift({at:new Date().toISOString(),sym:o.sym,side:o.side,price:o.price,status:'cancelled',note:'手动撤销'});
+  if(!saveState()){ ST.orderLog.shift(); ST.orders.splice(i,0,o); return; }
+  render(); drawLines(); msg('已撤单');
+}
+function resetAccount(){
+  if(!confirm('重置账户？持仓、挂单、历史都会清空')) return;
+  ST = fresh(); saveState(); render(); drawLines(); loadChart(); msg('已重置');
+}
+function exportData(){
+  const blob = new Blob([JSON.stringify(ST,null,2)],{type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `paper-${new Date().toISOString().slice(0,10)}.json`;
+  a.click(); URL.revokeObjectURL(a.href);
+}
+function importData(input){
+  const f = input.files[0]; if(!f) return;
+  const rd = new FileReader();
+  rd.onload = ()=>{ try{
+    const s = JSON.parse(rd.result);
+    if(!s.account) throw new Error('格式不对');
+    ST = loadStateFrom(s); saveState(); render(); drawLines(); msg('已导入');
+  }catch(e){ msg('导入失败：'+e.message); } };
+  rd.readAsText(f);
+  input.value='';
+}
+function loadStateFrom(s){
+  s.positions = Array.isArray(s.positions)?s.positions:[];
+  s.history = Array.isArray(s.history)?s.history:[];
+  s.orders = Array.isArray(s.orders)?s.orders:[];
+  s.orderLog = Array.isArray(s.orderLog)?s.orderLog:[];
+  const maxId = Math.max(0,...s.positions.map(p=>+p.id||0),...s.history.map(h=>+h.id||0),...s.orders.map(o=>+o.id||0));
+  if(!isFinite(s.seq)||s.seq<=maxId) s.seq=maxId+1;
+  s.account = Object.assign(fresh().account, s.account||{});
+  if(s.history.length>HISTORY_MAX) s.history.length = HISTORY_MAX;
+  return s;
+}
+
+// ================= 启动 =================
+function buildTabs(){
+  $('symTabs').innerHTML = SYMS.map(s=>`<div class="tab ${s===SYM?'on':''}" data-sym="${s}">${s.replace('USDT','')}</div>`).join('');
+  $('ivTabs').innerHTML = ['15m','1h','4h','1d'].map(v=>`<div class="tab ${v===IV?'on':''}" data-iv="${v}">${v}</div>`).join('');
+  $('symTabs').onclick = (e)=>{ const t=e.target.closest('.tab'); if(!t) return; SYM=t.dataset.sym; buildTabs(); loadChart(); loadV4(); renderLiq(); };
+  $('ivTabs').onclick  = (e)=>{ const t=e.target.closest('.tab'); if(!t) return; IV=t.dataset.iv; buildTabs(); loadChart(); };
+}
+async function loop(){
+  try{
+    PX = await prices();
+    await tickOrders();
+    await tickExits();
+    render(); drawLines();
+  }catch(e){ console.warn(e); }
+  setTimeout(loop, 5000);
+}
+document.addEventListener('DOMContentLoaded', ()=>{
+  buildTabs(); initChart(); render(); chipInit();
+  if(CORRUPT_NOTICE) msg(CORRUPT_NOTICE); // 弹窗可能被浏览器拦掉，页面上再留一份
+  $('btnLong').onclick = ()=>openPos('long');
+  $('btnShort').onclick = ()=>openPos('short');
+  loadChart(); loadV4(); renderLiq(); startLiqWS();
+  loop();
+  setInterval(renderLiq, 20000);
+  setInterval(()=>{ loadChart(); loadV4(); }, 60000);
+});
+</script>
+</body>
+</html>
