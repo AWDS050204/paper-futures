@@ -957,8 +957,14 @@ function startLiqWS(){
 }
 async function renderLiq(){
   try{
-    const px = PX[SYM];
-    if(!isFinite(px)){ $('liqList').textContent='取不到价格'; return; }
+    // 首屏时价格缓存还是空的，直接 return 会让热力图空白整整一个刷新周期（20 秒）。
+    // 这里自己补一次取价，不依赖 loop() 先跑过。
+    let px = PX[SYM];
+    if(!isFinite(px)){
+      try{ PX = await prices(); }catch{}
+      px = PX[SYM];
+    }
+    if(!isFinite(px)){ $('liqList').textContent='取不到价格，稍后自动重试'; return; }
     let oiUsd = 0;
     try{ const oi = await get(`/fapi/v1/openInterest?symbol=${SYM}`); oiUsd = (+oi.openInterest)*px; }catch{}
     const tiers=[{lev:100,share:.05},{lev:50,share:.15},{lev:25,share:.25},{lev:10,share:.35},{lev:5,share:.20}];
