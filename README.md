@@ -17,6 +17,24 @@
 
 ---
 
+## 长什么样
+
+[![主界面](docs/preview-dashboard.png)](https://awds050204.github.io/paper-futures/)
+
+<details>
+<summary>爆仓热力图 / 问一句</summary>
+
+| 爆仓热力图 | 问一句 |
+|---|---|
+| ![爆仓热力图](docs/preview-heatmap.png) | ![问一句](docs/preview-ask.png) |
+
+热力图按「未平仓量 × 常见杠杆档位」估算强平价位，**是估算不是真实分布**。
+「问一句」是纯本地关键词匹配，只复述当前数字，**不做方向判断**。
+
+</details>
+
+---
+
 ## 第一次用，从这里开始
 
 **1. 看行情** —— 左上角选币种（BTC / ETH / BNB）和周期（15m / 1h / 4h / 1d）
