@@ -185,7 +185,6 @@
         <thead><tr><th>币</th><th>向</th><th>挂价</th><th>距现价</th><th>止损</th><th>杠杆</th><th>R</th><th></th></tr></thead>
         <tbody id="orders"><tr><td colspan="8" class="muted">无挂单</td></tr></tbody>
       </table>
-      <div id="orderLog" class="muted" style="margin-top:6px;font-size:11px;line-height:1.7"></div>
     </div>
 
     <div class="card" style="margin-top:12px">
@@ -194,6 +193,11 @@
         <thead><tr><th>币</th><th>向</th><th>数量</th><th>开仓</th><th>止损</th><th>强平</th><th>浮动</th><th></th></tr></thead>
         <tbody id="positions"><tr><td colspan="8" class="muted">无持仓</td></tr></tbody>
       </table>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>最近操作 <span class="muted" id="actCount" style="font-weight:400"></span></h2>
+      <div id="actLog" class="muted" style="font-size:11px;line-height:1.9"></div>
     </div>
 
     <div class="card" style="margin-top:12px">
@@ -619,6 +623,13 @@ function saveState(){
   catch(e){ msg('保存失败，本次操作已撤销：'+e.message); return false; }
 }
 
+// 最近操作日志：所有会改账户的动作都记一条，方便回头查"那笔单去哪了"
+// tone: 'up' 绿 / 'down' 红 / 'muted' 灰
+function logAct(text, tone){
+  ST.orderLog.unshift({ at:new Date().toISOString(), text, tone: tone || 'muted' });
+  if(ST.orderLog.length > 40) ST.orderLog.length = 40;
+}
+
 // ================= 取数 =================
 async function get(path, base=FAPI){
   const r = await fetch(base+path, { signal: AbortSignal.timeout(15000) });
@@ -700,6 +711,13 @@ async function tickExits(){
   for(const p of hits) funding[p.id] = await fundingCostOf(p);
   const snap = JSON.stringify(ST);
   const closed = Core.tickExits(ST, px, { fundingUsdOf:(p)=>funding[p.id]||0 });
+  if(closed.length){
+    const lab = {stop:'止损',target:'止盈',liq:'强平',time:'到期'};
+    for(const c of closed){
+      logAct('自动平仓 ' + (c.sym||'').replace('USDT','') + '（' + (lab[c.reason]||c.reason) + '）｜盈亏 ' +
+        (c.pnl>=0?'+':'') + fmt(c.pnl), c.pnl>=0?'up':'down');
+    }
+  }
   if(closed.length && !saveState()) ST = JSON.parse(snap);   // 存不进去：整体还原，下一轮重试
 }
 
@@ -931,10 +949,20 @@ function render(){
       <td><button class="ghost" onclick="cancelOrder(${o.id})">撤</button></td></tr>`;
   }).join('') : '<tr><td colspan="8" class="muted">无挂单</td></tr>';
 
-  $('orderLog').innerHTML = (ST.orderLog||[]).slice(0,5).map(l=>{
-    const lab = {filled:'成交',expired:'过期',rejected:'拒绝',cancelled:'撤销'}[l.status]||l.status;
-    return `<div class="${l.status==='filled'?'up':'muted'}">${(l.at||'').slice(5,16).replace('T',' ')} ${l.sym.replace('USDT','')} ${l.side==='long'?'多':'空'} @${fmt(l.price)} — ${lab}：${l.note||''}</div>`;
+  // 最近操作：新记录带 text，旧记录只有 status/sym/price，这里统一成一句人话
+  const actLines = (ST.orderLog||[]).slice(0,12).map(l=>{
+    const time = (l.at||'').slice(5,16).replace('T',' ');
+    let text = l.text;
+    if(!text){
+      const lab = {filled:'挂单成交',expired:'挂单过期',rejected:'挂单被拒',cancelled:'撤单'}[l.status]||l.status||'操作';
+      const sym = (l.sym||'').replace('USDT','');
+      text = lab + (sym?' '+sym+' '+(l.side==='long'?'多':'空'):'') + (l.price?' @'+fmt(l.price):'') + (l.note?'：'+l.note:'');
+    }
+    const tone = l.tone || (l.status==='filled'?'up':(l.status==='rejected'?'down':'muted'));
+    return `<div class="${tone}" style="display:flex;gap:8px"><span class="muted" style="flex:none;font-variant-numeric:tabular-nums">${time}</span><span>${text}</span></div>`;
   }).join('');
+  $('actLog').innerHTML = actLines || '<span class="muted">还没有操作记录。开仓、平仓、挂单、撤单、自动止损都会记在这里。</span>';
+  $('actCount').textContent = (ST.orderLog||[]).length ? '（最近 ' + Math.min(12,(ST.orderLog||[]).length) + ' 条）' : '';
 
   $('history').innerHTML = ST.history.length ? ST.history.slice(0,30).map(h=>`
     <tr><td class="muted">${(h.closedAt||'').slice(5,16).replace('T',' ')}</td>
@@ -1145,7 +1173,8 @@ function saveConfig(){
   ST.account.maxPos = +$('maxPos').value || 3;
   ST.account.leverage = +$('leverage').value || 20;
   ST.account.feeBps = +$('feeBps').value;
-  if(!saveState()){ ST.account = old; render(); return; }
+  logAct('改配置：风险 ' + ST.account.riskPct + '% · 最多 ' + ST.account.maxPos + ' 单 · ' + ST.account.leverage + 'x · 费率 ' + ST.account.feeBps + '‱');
+  if(!saveState()){ ST.account = old; ST.orderLog.shift(); render(); return; }
   msg('配置已保存'); render();
 }
 async function openPos(side){
@@ -1155,6 +1184,10 @@ async function openPos(side){
     const atr = await atrOf(SYM); if(!atr) throw new Error('ATR 数据不足');
     const r = createPosition({sym:SYM, side, px, atr});
     if(r.error) throw new Error(r.error);
+    const _np = r.position;
+    logAct('开' + (side==='long'?'多':'空') + ' ' + SYM.replace('USDT','') + ' ' + _np.qty + ' @' + fmt(_np.entry) +
+      '｜止损 ' + fmt(_np.stop) + '｜' + _np.leverage + 'x' + (r.warn?'｜'+r.warn:''), side==='long'?'up':'down');
+    saveState();
     msg(`${side==='long'?'做多':'做空'} ${SYM} ${r.position.qty} @ ${fmt(r.position.entry)}｜止损 ${fmt(r.position.stop)}｜${r.position.leverage}x${r.warn?'｜⚠️ '+r.warn:''}`);
     render(); drawLines();
   }catch(e){ msg('开仓失败：'+e.message); }
@@ -1165,6 +1198,8 @@ async function doClose(id){
     const p = ST.positions.find(x=>x.id===id);
     const r = await closePos(id, PX[p.sym]);
     if(r.error) throw new Error(r.error);
+    logAct('平仓 ' + (p?p.sym.replace('USDT',''):'') + '｜盈亏 ' + (r.pnl>=0?'+':'') + fmt(r.pnl), r.pnl>=0?'up':'down');
+    saveState();
     msg('已平仓，盈亏 '+fmt(r.pnl)); render(); drawLines(); loadChart();
   }catch(e){ msg('平仓失败：'+e.message); }
 }
@@ -1197,7 +1232,10 @@ async function placeOrder(side){
   ST.orders.push({ id:ST.seq++, sym:SYM, side, price, stop, targetR, leverage,
     createdAt:new Date().toISOString(),
     expiresAt: ttl>0 ? new Date(Date.now()+ttl*3600e3).toISOString() : null });
-  if(!saveState()){ const o = ST.orders.pop(); ST.seq = o.id; return; }
+  logAct('挂' + (side==='long'?'多':'空') + ' ' + SYM.replace('USDT','') + ' @' + fmt(price) +
+    '｜止损 ' + (stop?fmt(stop):'成交时按 ATR') + '｜' + (leverage?leverage+'x':'默认杠杆') + '｜' + targetR + 'R' +
+    (ttl>0?'｜'+ttl+'h 有效':'｜不过期'));
+  if(!saveState()){ ST.orderLog.shift(); const o = ST.orders.pop(); ST.seq = o.id; return; }
   render(); drawLines();
   msg(`已挂${side==='long'?'多':'空'}单 ${SYM} @ ${fmt(price)}｜止损 ${stop?fmt(stop):'成交时按 ATR'}｜杠杆 ${leverage?leverage+'x':'默认'}｜${targetR}R`);
 }
@@ -1205,7 +1243,7 @@ function cancelOrder(id){
   const i = ST.orders.findIndex(o=>o.id===id);
   if(i<0) return msg('找不到挂单');
   const [o] = ST.orders.splice(i,1);
-  ST.orderLog.unshift({at:new Date().toISOString(),sym:o.sym,side:o.side,price:o.price,status:'cancelled',note:'手动撤销'});
+  logAct('撤单 ' + o.sym.replace('USDT','') + ' ' + (o.side==='long'?'多':'空') + ' @' + fmt(o.price));
   if(!saveState()){ ST.orderLog.shift(); ST.orders.splice(i,0,o); return; }
   render(); drawLines(); msg('已撤单');
 }
