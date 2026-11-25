@@ -70,6 +70,7 @@
           <div class="muted" style="font-size:11px;letter-spacing:.5px;margin-bottom:2px">PAPER FUTURES · 纸上合约</div>
           <div class="big" id="equity">—</div>
           <div class="sub" id="equitySub">纯前端 · 数据只存在本浏览器</div>
+          <div class="sub down" id="srvWarn" style="display:none;font-weight:600"></div>
         </div>
         <div class="flex">
           <button class="ghost" onclick="exportData()">导出</button>
@@ -640,6 +641,8 @@ function saveState(){
 //   - 好处：浏览器关掉后服务端仍在后台撮合、止损、止盈，成交价是真实的触发价
 // 线上纯静态版没有 /api，检测失败就退回 localStorage，行为完全不变。
 let SERVER = false;
+let SRV_FAILS = 0;         // 服务端模式下，连续拉取账本失败的次数；到 3 次就在页面上亮红字，不许静默
+const SRV_FAIL_LIMIT = 3;
 
 async function postJSON(path, body){
   const r = await fetch(path, {
@@ -989,6 +992,13 @@ function render(){
       ? '<span class="pill" style="background:#12312c;color:#7ee0d0;margin-right:6px">服务端 · 关页面也盯盘</span>'
       : '')
     + `起始 $${fmt(ST.account.start,0)} ｜ 累计 <span class="${chg>=0?'up':'down'}">${chg>=0?'+':''}${fmt(chg*100)}%</span> ｜ 手续费 -$${fmt(fees)} ｜ 浮动 ${upnl>=0?'+':''}${fmt(upnl)}`;
+  // 服务端断连提示：前端在服务端模式下不撮合，服务端一挂就等于没人盯盘，必须让人看见
+  const sw = $('srvWarn');
+  if(sw){
+    const down = SERVER && SRV_FAILS >= SRV_FAIL_LIMIT;
+    sw.style.display = down ? '' : 'none';
+    sw.textContent = down ? '与服务端断开，当前没有在盯盘' : '';
+  }
   $('riskPct').value = ST.account.riskPct;
   $('maxPos').value = ST.account.maxPos;
   $('leverage').value = ST.account.leverage;
@@ -1428,21 +1438,32 @@ function buildTabs(){
   }
 }
 async function loop(){
+  if(SERVER){
+    // 服务端在后台撮合，前端定期把账本拉回来（含服务端刚成交的单）。
+    // 拉账本和取行情互相独立：行情失败不能连带跳过账本，账本失败也不能被吞掉。
+    try{ PX = await prices(); }catch(e){ console.warn(e); }
+    try{ await refreshState(); SRV_FAILS = 0; }catch(e){ SRV_FAILS++; console.warn('refreshState failed ('+SRV_FAILS+')', e); }
+    try{ render(); drawLines(); }catch(e){ console.warn(e); }
+    setTimeout(loop, SRV_FAILS ? 4000 : 8000);   // 出问题时探测得更勤，恢复后红字尽快消失
+    return;
+  }
   try{
     PX = await prices();
-    if(SERVER){
-      // 服务端在后台撮合，前端定期把账本拉回来（含服务端刚成交的单）
-      try{ await refreshState(); }catch{}
-    } else {
-      await tickOrders();
-      await tickExits();
-    }
+    await tickOrders();
+    await tickExits();
     render(); drawLines();
   }catch(e){ console.warn(e); }
-  setTimeout(loop, SERVER ? 8000 : 5000);
+  setTimeout(loop, 5000);
 }
 document.addEventListener('DOMContentLoaded', async ()=>{
   await detectServer();     // 有 /api 就切服务端模式；没有就走 localStorage，线上行为不变
+  if(SERVER){
+    // 服务端撮合固定用币安价。界面若选别的源，图表/止损线和实际成交价会对不上，所以这个模式下不提供选择。
+    // 只改内存里的 EXID，不写 localStorage：同一浏览器回到静态版时仍记得原来的选择。
+    EXID = 'binance';
+    const row = $('exSel') && $('exSel').closest('.tabs');
+    if(row) row.style.display = 'none';
+  }
   buildTabs(); initChart(); render(); chipInit();
   if(SERVER) showMode();
   if(CORRUPT_NOTICE) msg(CORRUPT_NOTICE); // 弹窗可能被浏览器拦掉，页面上再留一份
