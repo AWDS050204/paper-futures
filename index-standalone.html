@@ -291,6 +291,15 @@
     '保存在动': 'saving',
     '已撤单': 'Order cancelled', '配置已保存': 'Settings saved', '已重置': 'Reset done',
     '已导入': 'Imported',
+    // 服务端模式
+    '服务端 · 关页面也盯盘': 'Server · keeps watching with the page closed',
+    '与服务端断开，当前没有在盯盘': 'Disconnected from the server: nothing is watching your positions right now',
+    '配置已保存（服务端）': 'Settings saved (server)', '已撤单（服务端）': 'Order cancelled (server)', '已重置（服务端）': 'Reset done (server)',
+    '服务端模式不支持导入：账本在服务端（trading/paper.json）。要换账本请直接替换那个文件后重启服务。':
+      'Import is not supported in server mode: the ledger lives on the server (trading/paper.json). To swap ledgers, replace that file and restart the server.',
+    // server.mjs 直接返回的错误原文
+    '挂单价无效': 'Invalid limit price', '止损价无效': 'Invalid stop price', 'R 倍数无效': 'Invalid R multiple', '有效期无效': 'Invalid validity period',
+    '杠杆需在 1–125 之间': 'Leverage must be 1–125', '找不到挂单': 'Order not found', '不支持该标的': 'Unsupported symbol',
     '先填挂价': 'Enter a price first', '取不到现价': 'Cannot fetch last price',
     '止损无效': 'Invalid stop', '杠杆需在 1–125': 'Leverage must be 1–125',
     '多单止损必须低于挂价': 'Long stop must be below the limit price',
@@ -333,7 +342,7 @@
   // 以前只换前缀，后半句原样保留，结果是 "Open failed: 已达最大持仓 2" 这种中英混排。
   var PREFIX = [
     ['开仓失败：', 'Open failed: '], ['平仓失败：', 'Close failed: '], ['导入失败：', 'Import failed: '],
-    ['图表加载失败：', 'Chart failed to load: '], ['v4 判定失败：', 'v4 check failed: '],
+    ['图表加载失败：', 'Chart failed to load: '], ['配置保存失败：', 'Settings save failed: '], ['挂单失败：', 'Order failed: '], ['v4 判定失败：', 'v4 check failed: '],
     ['保存失败，本次操作已撤销：', 'Save failed, change rolled back: ']
   ];
 
@@ -379,6 +388,14 @@
       var note = m[6] ? (translateText(m[6]) || m[6]) : '';
       return m[1] + ' ' + m[2] + ' ' + (m[3] === '多' ? 'Long' : 'Short') + ' @' + m[4] + ' — ' + st + (note ? ': ' + note : '');
     }],
+    // 服务端返回的参数化错误
+    [/^(\S+) 暂时取不到价格，未(开仓|挂单)$/, function (m) { return 'No price for ' + m[1] + ' right now, ' + (m[2] === '开仓' ? 'no position opened' : 'no order placed'); }],
+    [/^(\S+) 暂时取不到价格，未平仓，请稍后重试$/, 'No price for $1 right now, position left open; try again shortly'],
+    [/^多单止损 (.+) 必须低于挂单价 (.+)$/, 'Long stop $1 must be below the limit price $2'],
+    [/^空单止损 (.+) 必须高于挂单价 (.+)$/, 'Short stop $1 must be above the limit price $2'],
+    [/^买单挂价 (.+) 不低于现价 (.+)，会立即成交；想立刻进场请直接开仓$/, 'Buy limit $1 is not below the market ($2), so it would fill at once. To enter now, just open a position.'],
+    [/^卖单挂价 (.+) 不高于现价 (.+)，会立即成交；想立刻进场请直接开仓$/, 'Sell limit $1 is not above the market ($2), so it would fill at once. To enter now, just open a position.'],
+    [/^已挂(多|空)单 (\S+) @ (\S+)（服务端）$/, function (m) { return 'Limit ' + (m[1] === '多' ? 'buy' : 'sell') + ' placed: ' + m[2] + ' @ ' + m[3] + ' (server)'; }],
     // #msg 提示
     [/^已平仓，盈亏 (.+)$/, 'Closed, P&L $1'],
     [/^买单挂价 (.+) 不低于现价 (.+)，会立即成交；想进场请直接做多$/, 'Buy limit $1 is not below the market ($2), so it would fill at once. To enter now, just go long.'],
@@ -440,15 +457,25 @@
       var el = spans[i];
       if (!/[\u4e00-\u9fa5]/.test(el.textContent)) continue;
       if (!store.has(el)) store.set(el, el.textContent);
-      var orig = store.get(el);
-
-      // 先查字典（空状态那句在字典里）；查不到再走日志词表（每句都带数字，只能逐词拼）
-      var t = translateText(orig);
-      if (t == null) {
-        t = orig;
-        for (var k = 0; k < ACT.length; k++) {
-          ACT[k][0].lastIndex = 0;
-          t = t.replace(ACT[k][0], ACT[k][1]);
+      var t = store.get(el);
+      // 先查整句字典（空状态那句在 EN 里）；查不到再走下面的分行逻辑
+      var whole = translateText(t);
+      if (whole != null) {
+        t = whole;
+      } else {
+        // 撮合产生的旧格式行：「挂单成交 BTC 多 @60,000.00：成交 59900，止损 …」
+        // 标签、方向、「：」后的原因要分开翻；原因优先走整句字典/规则
+        var lg = t.match(/^(挂单成交|挂单过期|挂单被拒|撤单)( [^：]*)(?:：(.*))?$/);
+        if (lg) {
+          var lab = { '挂单成交': 'Order filled', '挂单过期': 'Order expired', '挂单被拒': 'Order rejected', '撤单': 'Cancelled' }[lg[1]];
+          var body = lg[2].replace(/ 多 @/, ' long @').replace(/ 空 @/, ' short @');
+          var note = lg[3] ? (translateText(lg[3]) || lg[3]) : '';
+          t = lab + body + (note ? ': ' + note : '');
+        } else {
+          for (var k = 0; k < ACT.length; k++) {
+            ACT[k][0].lastIndex = 0;
+            t = t.replace(ACT[k][0], ACT[k][1]);
+          }
         }
       }
       if (el.textContent !== t) el.textContent = t;
@@ -750,6 +777,7 @@
           <div class="muted" style="font-size:11px;letter-spacing:.5px;margin-bottom:2px">PAPER FUTURES · 纸上合约</div>
           <div class="big" id="equity">—</div>
           <div class="sub" id="equitySub">纯前端 · 数据只存在本浏览器</div>
+          <div class="sub down" id="srvWarn" style="display:none;font-weight:600"></div>
         </div>
         <div class="flex">
           <button class="ghost" onclick="exportData()">导出</button>
@@ -1320,6 +1348,8 @@ function saveState(){
 //   - 好处：浏览器关掉后服务端仍在后台撮合、止损、止盈，成交价是真实的触发价
 // 线上纯静态版没有 /api，检测失败就退回 localStorage，行为完全不变。
 let SERVER = false;
+let SRV_FAILS = 0;         // 服务端模式下，连续拉取账本失败的次数；到 3 次就在页面上亮红字，不许静默
+const SRV_FAIL_LIMIT = 3;
 
 async function postJSON(path, body){
   const r = await fetch(path, {
@@ -1669,6 +1699,13 @@ function render(){
       ? '<span class="pill" style="background:#12312c;color:#7ee0d0;margin-right:6px">服务端 · 关页面也盯盘</span>'
       : '')
     + `起始 $${fmt(ST.account.start,0)} ｜ 累计 <span class="${chg>=0?'up':'down'}">${chg>=0?'+':''}${fmt(chg*100)}%</span> ｜ 手续费 -$${fmt(fees)} ｜ 浮动 ${upnl>=0?'+':''}${fmt(upnl)}`;
+  // 服务端断连提示：前端在服务端模式下不撮合，服务端一挂就等于没人盯盘，必须让人看见
+  const sw = $('srvWarn');
+  if(sw){
+    const down = SERVER && SRV_FAILS >= SRV_FAIL_LIMIT;
+    sw.style.display = down ? '' : 'none';
+    sw.textContent = down ? '与服务端断开，当前没有在盯盘' : '';
+  }
   $('riskPct').value = ST.account.riskPct;
   $('maxPos').value = ST.account.maxPos;
   $('leverage').value = ST.account.leverage;
@@ -2108,21 +2145,32 @@ function buildTabs(){
   }
 }
 async function loop(){
+  if(SERVER){
+    // 服务端在后台撮合，前端定期把账本拉回来（含服务端刚成交的单）。
+    // 拉账本和取行情互相独立：行情失败不能连带跳过账本，账本失败也不能被吞掉。
+    try{ PX = await prices(); }catch(e){ console.warn(e); }
+    try{ await refreshState(); SRV_FAILS = 0; }catch(e){ SRV_FAILS++; console.warn('refreshState failed ('+SRV_FAILS+')', e); }
+    try{ render(); drawLines(); }catch(e){ console.warn(e); }
+    setTimeout(loop, SRV_FAILS ? 4000 : 8000);   // 出问题时探测得更勤，恢复后红字尽快消失
+    return;
+  }
   try{
     PX = await prices();
-    if(SERVER){
-      // 服务端在后台撮合，前端定期把账本拉回来（含服务端刚成交的单）
-      try{ await refreshState(); }catch{}
-    } else {
-      await tickOrders();
-      await tickExits();
-    }
+    await tickOrders();
+    await tickExits();
     render(); drawLines();
   }catch(e){ console.warn(e); }
-  setTimeout(loop, SERVER ? 8000 : 5000);
+  setTimeout(loop, 5000);
 }
 document.addEventListener('DOMContentLoaded', async ()=>{
   await detectServer();     // 有 /api 就切服务端模式；没有就走 localStorage，线上行为不变
+  if(SERVER){
+    // 服务端撮合固定用币安价。界面若选别的源，图表/止损线和实际成交价会对不上，所以这个模式下不提供选择。
+    // 只改内存里的 EXID，不写 localStorage：同一浏览器回到静态版时仍记得原来的选择。
+    EXID = 'binance';
+    const row = $('exSel') && $('exSel').closest('.tabs');
+    if(row) row.style.display = 'none';
+  }
   buildTabs(); initChart(); render(); chipInit();
   if(SERVER) showMode();
   if(CORRUPT_NOTICE) msg(CORRUPT_NOTICE); // 弹窗可能被浏览器拦掉，页面上再留一份
