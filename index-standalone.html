@@ -350,6 +350,9 @@
   // 注意：整句规则只能匹配「一个文本节点」。被 <b>/<span> 切开的内容（如「问一句」的答案）走下面的 ASK 模板。
   // 函数型规则收到的是 core.match(re) 的结果（数组，m[1] 是第一个括号）。
   var RULES = [
+    // 盯盘中断提示（P3 口径 A）：整句带数字和时间，只能按模式翻
+    [/^⚠️ 盯盘中断过约 (\d+) 分钟（(.+) → (.+)），这期间的价格穿越没有计入账本；紧止损\/挂单的成交价可能是恢复后的价，不是当时的触发价。$/,
+      '⚠️ Monitoring was down about $1 minutes ($2 → $3). Price crossings in that window were not counted, so fills for tight stops or limit orders may reflect the recovery price rather than the trigger price.'],
     [/^起始 (.+) ｜ 累计 (.+) ｜ 手续费 (.+) ｜ 浮动 (.+)$/, 'Start $1 | Total $2 | Fees $3 | Unrealised $4'],
     [/^估算 · WS (在线|离线) · 真实强平 (\d+) 条$/, function (m) {
       return 'estimated · WS ' + (m[1] === '在线' ? 'online' : 'offline') + ' · ' + m[2] + ' real liquidations';
@@ -364,8 +367,7 @@
     // 热力图每档一行
     [/^多 (\d+)x · (.+)$/, 'Long $1x · $2'],
     [/^空 (\d+)x · (.+)$/, 'Short $1x · $2'],
-    [/^(\d)\/5 · 不开仓$/, '$1/5 · no entry'],
-    [/^(\d)\/5 · 可开仓$/, '$1/5 · entry allowed'],
+    [/^(\d)\/5 · 不开仓$/, '$1/5 · no entry'],    [/^(\d)\/5 · 可开仓$/, '$1/5 · entry allowed'],
     // 开/平仓失败原因（前面的「开仓失败：」由 PREFIX 处理）
     [/^(.+) 已有持仓，同一标的不重复开仓$/, '$1 already has a position; one per symbol'],
     [/^已达最大持仓 (\d+)$/, 'Max positions reached ($1)'],
@@ -642,25 +644,34 @@
     if (node.nodeValue !== next) node.nodeValue = next;
   }
 
-  // 属性翻译。两个坑（都会自激成死循环）：
-  //   1) setAttribute 即使值没变也会产生 mutation 记录 → 只能在不同时才写
+  // 属性翻译。三个坑：
+  //   1) setAttribute 即使值没变也会产生 mutation 记录 → 只能在不同时才写（否则自激死循环）
   //   2) 把原文存进 el.dataset 本身也是写属性 → 改用 WeakMap，完全不碰 DOM
+  //   3) 只记住首次见到的原文，页面脚本后来改了 title/placeholder 就会沿用旧值
+  //      → 同时记「上次写进去的值」，当前值和它对不上就说明被别人改过，重新记原文
   var attrStore = new WeakMap();
+  var ATTR_NAMES = ['placeholder', 'title'];
   function attrs(root) {
     if (!root.querySelectorAll) return;
     var els = root.querySelectorAll('[placeholder],[title]');
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
       var rec = attrStore.get(el);
-      if (!rec) {
-        rec = { placeholder: el.getAttribute('placeholder'), title: el.getAttribute('title') };
-        attrStore.set(el, rec);
-      }
-      for (var a in rec) {
-        var orig = rec[a];
-        if (orig == null) continue;
-        var next = LANG === 'en' ? (translateText(orig) || orig) : orig;
-        if (el.getAttribute(a) !== next) el.setAttribute(a, next);
+      if (!rec) { rec = {}; attrStore.set(el, rec); }
+      for (var n = 0; n < ATTR_NAMES.length; n++) {
+        var a = ATTR_NAMES[n];
+        var cur = el.getAttribute(a);
+        if (cur == null) continue;
+        var slot = rec[a];
+        if (!slot || cur !== slot.applied) {
+          // 首次见到，或外部改过（当前值不等于我们上次写的值）：把当前值当作新原文
+          slot = rec[a] = { orig: cur, applied: cur };
+        }
+        var next = LANG === 'en' ? (translateText(slot.orig) || slot.orig) : slot.orig;
+        if (cur !== next) {
+          el.setAttribute(a, next);
+          slot.applied = next;
+        }
       }
     }
   }
@@ -778,6 +789,7 @@
           <div class="big" id="equity">—</div>
           <div class="sub" id="equitySub">纯前端 · 数据只存在本浏览器</div>
           <div class="sub down" id="srvWarn" style="display:none;font-weight:600"></div>
+          <div class="sub" id="gapWarn" style="display:none;color:#f0b90b;font-weight:600"></div>
         </div>
         <div class="flex">
           <button class="ghost" onclick="exportData()">导出</button>
@@ -1705,6 +1717,19 @@ function render(){
     const down = SERVER && SRV_FAILS >= SRV_FAIL_LIMIT;
     sw.style.display = down ? '' : 'none';
     sw.textContent = down ? '与服务端断开，当前没有在盯盘' : '';
+  }
+  // 盯盘中断提示（P3 口径 A）：只说明这期间没在盯、价格穿越未计入，不补算、不猜成交价
+  const gw = $('gapWarn');
+  if(gw){
+    const g = SERVER && ST.gap;
+    gw.style.display = g ? '' : 'none';
+    if(g){
+      const from = new Date(g.from);
+      const to = new Date(g.to);
+      const hm = (d)=>String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+      gw.textContent = `⚠️ 盯盘中断过约 ${g.minutes} 分钟（${hm(from)} → ${hm(to)}），这期间的价格穿越没有计入账本；` +
+        `紧止损/挂单的成交价可能是恢复后的价，不是当时的触发价。`;
+    } else { gw.textContent = ''; }
   }
   $('riskPct').value = ST.account.riskPct;
   $('maxPos').value = ST.account.maxPos;
