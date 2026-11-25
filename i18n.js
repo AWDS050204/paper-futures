@@ -158,6 +158,15 @@
     '保存在动': 'saving',
     '已撤单': 'Order cancelled', '配置已保存': 'Settings saved', '已重置': 'Reset done',
     '已导入': 'Imported',
+    // 服务端模式
+    '服务端 · 关页面也盯盘': 'Server · keeps watching with the page closed',
+    '与服务端断开，当前没有在盯盘': 'Disconnected from the server: nothing is watching your positions right now',
+    '配置已保存（服务端）': 'Settings saved (server)', '已撤单（服务端）': 'Order cancelled (server)', '已重置（服务端）': 'Reset done (server)',
+    '服务端模式不支持导入：账本在服务端（trading/paper.json）。要换账本请直接替换那个文件后重启服务。':
+      'Import is not supported in server mode: the ledger lives on the server (trading/paper.json). To swap ledgers, replace that file and restart the server.',
+    // server.mjs 直接返回的错误原文
+    '挂单价无效': 'Invalid limit price', '止损价无效': 'Invalid stop price', 'R 倍数无效': 'Invalid R multiple', '有效期无效': 'Invalid validity period',
+    '杠杆需在 1–125 之间': 'Leverage must be 1–125', '找不到挂单': 'Order not found', '不支持该标的': 'Unsupported symbol',
     '先填挂价': 'Enter a price first', '取不到现价': 'Cannot fetch last price',
     '止损无效': 'Invalid stop', '杠杆需在 1–125': 'Leverage must be 1–125',
     '多单止损必须低于挂价': 'Long stop must be below the limit price',
@@ -200,7 +209,7 @@
   // 以前只换前缀，后半句原样保留，结果是 "Open failed: 已达最大持仓 2" 这种中英混排。
   var PREFIX = [
     ['开仓失败：', 'Open failed: '], ['平仓失败：', 'Close failed: '], ['导入失败：', 'Import failed: '],
-    ['图表加载失败：', 'Chart failed to load: '], ['v4 判定失败：', 'v4 check failed: '],
+    ['图表加载失败：', 'Chart failed to load: '], ['配置保存失败：', 'Settings save failed: '], ['挂单失败：', 'Order failed: '], ['v4 判定失败：', 'v4 check failed: '],
     ['保存失败，本次操作已撤销：', 'Save failed, change rolled back: ']
   ];
 
@@ -246,6 +255,14 @@
       var note = m[6] ? (translateText(m[6]) || m[6]) : '';
       return m[1] + ' ' + m[2] + ' ' + (m[3] === '多' ? 'Long' : 'Short') + ' @' + m[4] + ' — ' + st + (note ? ': ' + note : '');
     }],
+    // 服务端返回的参数化错误
+    [/^(\S+) 暂时取不到价格，未(开仓|挂单)$/, function (m) { return 'No price for ' + m[1] + ' right now, ' + (m[2] === '开仓' ? 'no position opened' : 'no order placed'); }],
+    [/^(\S+) 暂时取不到价格，未平仓，请稍后重试$/, 'No price for $1 right now, position left open; try again shortly'],
+    [/^多单止损 (.+) 必须低于挂单价 (.+)$/, 'Long stop $1 must be below the limit price $2'],
+    [/^空单止损 (.+) 必须高于挂单价 (.+)$/, 'Short stop $1 must be above the limit price $2'],
+    [/^买单挂价 (.+) 不低于现价 (.+)，会立即成交；想立刻进场请直接开仓$/, 'Buy limit $1 is not below the market ($2), so it would fill at once. To enter now, just open a position.'],
+    [/^卖单挂价 (.+) 不高于现价 (.+)，会立即成交；想立刻进场请直接开仓$/, 'Sell limit $1 is not above the market ($2), so it would fill at once. To enter now, just open a position.'],
+    [/^已挂(多|空)单 (\S+) @ (\S+)（服务端）$/, function (m) { return 'Limit ' + (m[1] === '多' ? 'buy' : 'sell') + ' placed: ' + m[2] + ' @ ' + m[3] + ' (server)'; }],
     // #msg 提示
     [/^已平仓，盈亏 (.+)$/, 'Closed, P&L $1'],
     [/^买单挂价 (.+) 不低于现价 (.+)，会立即成交；想进场请直接做多$/, 'Buy limit $1 is not below the market ($2), so it would fill at once. To enter now, just go long.'],
@@ -307,15 +324,25 @@
       var el = spans[i];
       if (!/[\u4e00-\u9fa5]/.test(el.textContent)) continue;
       if (!store.has(el)) store.set(el, el.textContent);
-      var orig = store.get(el);
-
-      // 先查字典（空状态那句在字典里）；查不到再走日志词表（每句都带数字，只能逐词拼）
-      var t = translateText(orig);
-      if (t == null) {
-        t = orig;
-        for (var k = 0; k < ACT.length; k++) {
-          ACT[k][0].lastIndex = 0;
-          t = t.replace(ACT[k][0], ACT[k][1]);
+      var t = store.get(el);
+      // 先查整句字典（空状态那句在 EN 里）；查不到再走下面的分行逻辑
+      var whole = translateText(t);
+      if (whole != null) {
+        t = whole;
+      } else {
+        // 撮合产生的旧格式行：「挂单成交 BTC 多 @60,000.00：成交 59900，止损 …」
+        // 标签、方向、「：」后的原因要分开翻；原因优先走整句字典/规则
+        var lg = t.match(/^(挂单成交|挂单过期|挂单被拒|撤单)( [^：]*)(?:：(.*))?$/);
+        if (lg) {
+          var lab = { '挂单成交': 'Order filled', '挂单过期': 'Order expired', '挂单被拒': 'Order rejected', '撤单': 'Cancelled' }[lg[1]];
+          var body = lg[2].replace(/ 多 @/, ' long @').replace(/ 空 @/, ' short @');
+          var note = lg[3] ? (translateText(lg[3]) || lg[3]) : '';
+          t = lab + body + (note ? ': ' + note : '');
+        } else {
+          for (var k = 0; k < ACT.length; k++) {
+            ACT[k][0].lastIndex = 0;
+            t = t.replace(ACT[k][0], ACT[k][1]);
+          }
         }
       }
       if (el.textContent !== t) el.textContent = t;
