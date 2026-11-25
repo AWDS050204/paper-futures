@@ -186,6 +186,7 @@
     'ATR 2–6%': 'ATR 2–6%',
     // 「最近操作」卡片（#actLog 内部的行由 translateActivity 逐词处理，这两条是标题和空状态）
     '最近操作': 'Recent activity',
+    '数据源': 'Data source',
     '还没有操作记录。开仓、平仓、挂单、撤单、自动止损都会记在这里。':
       'No activity yet. Opens, closes, limit orders, cancels and automatic exits all land here.'
   };
@@ -266,6 +267,8 @@
     [/默认杠杆/g, 'default leverage'], [/成交时按 ATR/g, 'ATR at fill'],
     [/（止损）/g, ' (stop)'], [/（止盈）/g, ' (target)'], [/（强平）/g, ' (liquidated)'], [/（到期）/g, ' (timeout)'],
     [/h 有效/g, 'h valid'], [/不过期/g, 'never expires'],
+    [/杠杆自动从 (\d+)x 降到 (\d+)x：原档位强平会先于止损/g, 'leverage cut $1x→$2x: liquidation would fire before the stop'],
+    [/v4 只做多，此为练习单/g, 'v4 is long-only; practice trade'],
     [/ 多 @/g, ' long @'], [/ 空 @/g, ' short @'],
     [/最多 /g, 'max '], [/单 · /g, 'pos · '], [/ 费率 /g, ' fee '], [/风险 /g, 'risk '],
     [/（最近 (\d+) 条）/, ' (last $1)']
