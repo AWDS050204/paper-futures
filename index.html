@@ -71,6 +71,7 @@
           <div class="big" id="equity">—</div>
           <div class="sub" id="equitySub">纯前端 · 数据只存在本浏览器</div>
           <div class="sub down" id="srvWarn" style="display:none;font-weight:600"></div>
+          <div class="sub" id="gapWarn" style="display:none;color:#f0b90b;font-weight:600"></div>
         </div>
         <div class="flex">
           <button class="ghost" onclick="exportData()">导出</button>
@@ -998,6 +999,19 @@ function render(){
     const down = SERVER && SRV_FAILS >= SRV_FAIL_LIMIT;
     sw.style.display = down ? '' : 'none';
     sw.textContent = down ? '与服务端断开，当前没有在盯盘' : '';
+  }
+  // 盯盘中断提示（P3 口径 A）：只说明这期间没在盯、价格穿越未计入，不补算、不猜成交价
+  const gw = $('gapWarn');
+  if(gw){
+    const g = SERVER && ST.gap;
+    gw.style.display = g ? '' : 'none';
+    if(g){
+      const from = new Date(g.from);
+      const to = new Date(g.to);
+      const hm = (d)=>String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+      gw.textContent = `⚠️ 盯盘中断过约 ${g.minutes} 分钟（${hm(from)} → ${hm(to)}），这期间的价格穿越没有计入账本；` +
+        `紧止损/挂单的成交价可能是恢复后的价，不是当时的触发价。`;
+    } else { gw.textContent = ''; }
   }
   $('riskPct').value = ST.account.riskPct;
   $('maxPos').value = ST.account.maxPos;
