@@ -1066,10 +1066,13 @@ function ask(raw){
     if(!pos.length) return '当前没有持仓，没有强平价。<br><span class="muted">强平价只在开仓后才有。</span>';
     return pos.map(p=>{
       const cur = pxOf(p.sym);
-      const d = isFinite(cur)&&p.liq ? ((cur-p.liq)/cur*100) : null;
+      // 距离取绝对值：做空时强平在上方，(cur-liq) 是负数，不能直接显示成「还差 -9.7%」
+      const d = isFinite(cur)&&p.liq ? Math.abs((cur-p.liq)/cur*100) : null;
+      // 「止损更近」必须按方向判：多单止损在上方 → stop>liq；空单止损在下方 → stop<liq
+      const stopFirst = p.side==='long' ? p.stop>p.liq : p.stop<p.liq;
       return `<b>${p.sym.replace('USDT','')} ${p.side==='long'?'多':'空'}</b>：强平 <b class="down">${fmt(p.liq)}</b>` +
         (d!=null ? `，现价 ${fmt(cur)}，还差 <b>${fmt(d)}%</b>（${p.leverage}x）` : '') +
-        `<br><span class="muted">止损在 ${fmt(p.stop)}，止损比强平更近 → ${p.stop>p.liq?'先触碰止损':'先爆仓'}。</span>`;
+        `<br><span class="muted">止损在 ${fmt(p.stop)}，止损比强平更近 → ${stopFirst?'先触碰止损':'先爆仓'}。</span>`;
     }).join('<br><br>');
   }
 
