@@ -5,6 +5,11 @@
 (function () {
   'use strict';
 
+  // 被引用两次会各自装一个 MutationObserver，两套逻辑互相触发 mutation，页面直接卡死。
+  // 所以做成幂等的：第二份进来立即退出。（踩过一次：测试框架重复注入了这个脚本）
+  if (window.__PF_I18N_LOADED__) return;
+  window.__PF_I18N_LOADED__ = true;
+
   var KEY = 'paper.lang';
 
   var EN = {
@@ -277,7 +282,14 @@
   function translateActivity() {
     var box = document.getElementById('actLog');
     if (!box) return;
-    var spans = box.querySelectorAll('div > span:last-child');
+    // 两类目标：日志行（div > span:last-child）和空状态（#actLog 的直接子 span）
+    var spans = [];
+    var rows = box.querySelectorAll('div > span:last-child');
+    for (var r = 0; r < rows.length; r++) spans.push(rows[r]);
+    var direct = box.children;
+    for (var d = 0; d < direct.length; d++) {
+      if (direct[d].tagName === 'SPAN') spans.push(direct[d]);
+    }
     var cnt = document.getElementById('actCount');
 
     if (LANG !== 'en') {
@@ -295,10 +307,16 @@
       var el = spans[i];
       if (!/[\u4e00-\u9fa5]/.test(el.textContent)) continue;
       if (!store.has(el)) store.set(el, el.textContent);
-      var t = store.get(el);
-      for (var k = 0; k < ACT.length; k++) {
-        ACT[k][0].lastIndex = 0;
-        t = t.replace(ACT[k][0], ACT[k][1]);
+      var orig = store.get(el);
+
+      // 先查字典（空状态那句在字典里）；查不到再走日志词表（每句都带数字，只能逐词拼）
+      var t = translateText(orig);
+      if (t == null) {
+        t = orig;
+        for (var k = 0; k < ACT.length; k++) {
+          ACT[k][0].lastIndex = 0;
+          t = t.replace(ACT[k][0], ACT[k][1]);
+        }
       }
       if (el.textContent !== t) el.textContent = t;
     }
@@ -464,20 +482,26 @@
     if (node.nodeValue !== next) node.nodeValue = next;
   }
 
+  // 属性翻译。两个坑（都会自激成死循环）：
+  //   1) setAttribute 即使值没变也会产生 mutation 记录 → 只能在不同时才写
+  //   2) 把原文存进 el.dataset 本身也是写属性 → 改用 WeakMap，完全不碰 DOM
+  var attrStore = new WeakMap();
   function attrs(root) {
     if (!root.querySelectorAll) return;
     var els = root.querySelectorAll('[placeholder],[title]');
     for (var i = 0; i < els.length; i++) {
-      (function (el) {
-        ['placeholder', 'title'].forEach(function (a) {
-          var v = el.getAttribute(a);
-          if (!v) return;
-          var key = 'zh' + a;
-          if (!el.dataset[key]) el.dataset[key] = v;
-          var orig = el.dataset[key];
-          el.setAttribute(a, LANG === 'en' ? (translateText(orig) || orig) : orig);
-        });
-      })(els[i]);
+      var el = els[i];
+      var rec = attrStore.get(el);
+      if (!rec) {
+        rec = { placeholder: el.getAttribute('placeholder'), title: el.getAttribute('title') };
+        attrStore.set(el, rec);
+      }
+      for (var a in rec) {
+        var orig = rec[a];
+        if (orig == null) continue;
+        var next = LANG === 'en' ? (translateText(orig) || orig) : orig;
+        if (el.getAttribute(a) !== next) el.setAttribute(a, next);
+      }
     }
   }
 
