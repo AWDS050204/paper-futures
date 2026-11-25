@@ -1281,13 +1281,54 @@ function loadState(){
 }
 // 保存成功返回 true，失败（配额满等）返回 false；调用方必须检查，失败时回滚，避免"扣了钱却没记录"
 function saveState(){
+  // 服务端模式：账本在服务端磁盘上，前端不写 localStorage
+  if(SERVER) return true;
   try{ localStorage.setItem(KEY, JSON.stringify(ST)); return true; }
   catch(e){ msg('保存失败，本次操作已撤销：'+e.message); return false; }
 }
 
+// ============ 服务端模式 ============
+// 页面由 tools/paper/server.mjs 托管时，账本归服务端（trading/paper.json）：
+//   - 前端只发「动作」，由服务端用同一套逻辑执行并落盘
+//   - 好处：浏览器关掉后服务端仍在后台撮合、止损、止盈，成交价是真实的触发价
+// 线上纯静态版没有 /api，检测失败就退回 localStorage，行为完全不变。
+let SERVER = false;
+
+async function postJSON(path, body){
+  const r = await fetch(path, {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json' },
+    body: JSON.stringify(body || {}),
+    signal: AbortSignal.timeout(20000),
+  });
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok || j.error) throw new Error(j.error || ('HTTP '+r.status));
+  return j;
+}
+async function refreshState(){
+  const r = await fetch('/api/state', { signal: AbortSignal.timeout(15000) });
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  const j = await r.json();
+  if(j && j.account) ST = j;
+  return ST;
+}
+async function detectServer(){
+  try{
+    const r = await fetch('/api/state', { signal: AbortSignal.timeout(2500) });
+    if(!r.ok) return false;
+    const j = await r.json();
+    if(!j || !j.account) return false;
+    ST = j; SERVER = true;
+    return true;
+  }catch{ return false; }
+}
+// 服务端模式的标识由 render() 画在净值下面，这里只是占位，方便以后加更多说明
+function showMode(){ render(); }
+
 // 最近操作日志：所有会改账户的动作都记一条，方便回头查"那笔单去哪了"
 // tone: 'up' 绿 / 'down' 红 / 'muted' 灰
 function logAct(text, tone){
+  if(SERVER) return;   // 服务端模式：操作记录由服务端写，前端不重复记
   ST.orderLog.unshift({ at:new Date().toISOString(), text, tone: tone || 'muted' });
   if(ST.orderLog.length > 40) ST.orderLog.length = 40;
 }
@@ -1379,6 +1420,7 @@ async function closePos(id, px, reason='manual'){
 }
 
 async function tickExits(){
+  if(SERVER) return;   // 服务端模式：由服务端后台跑，前端不重复执行
   if(!ST.positions.length) return;
   const px = await prices();
   // 先用核心的判定找出"这一轮要平的"，只为它们去取费率（取费率要联网，不能每 5 秒为所有持仓都取）
@@ -1399,6 +1441,7 @@ async function tickExits(){
 }
 
 async function tickOrders(){
+  if(SERVER) return;   // 服务端模式：由服务端后台跑
   if(!ST.orders.length) return;
   const px = await prices();
   // 核心的撮合是同步的，所以先把"已触达"的挂单需要的 ATR 取好
@@ -1591,8 +1634,14 @@ function render(){
   const upnl = ST.positions.reduce((a,p)=>a+(isFinite(PX[p.sym])?pnlOf(p,PX[p.sym]):0),0);
   $('equity').textContent = '$'+fmt(eq+upnl);
   const chg = (eq+upnl)/ST.account.start-1;
-  const fees = ST.account.feeTotal;   // 只增字段，不随 history 封顶缩水（B3）
-  $('equitySub').innerHTML = `起始 $${fmt(ST.account.start,0)} ｜ 累计 <span class="${chg>=0?'up':'down'}">${chg>=0?'+':''}${fmt(chg*100)}%</span> ｜ 手续费 -$${fmt(fees)} ｜ 浮动 ${upnl>=0?'+':''}${fmt(upnl)}`;
+  // 累计手续费：优先用只增字段（B3）；服务端返回的账本可能没有，退回对 history 求和
+  const fees = ST.account.feeTotal != null
+    ? ST.account.feeTotal
+    : ST.history.reduce((a,h)=>a+(h.fee||0),0);
+  $('equitySub').innerHTML = (SERVER
+      ? '<span class="pill" style="background:#12312c;color:#7ee0d0;margin-right:6px">服务端 · 关页面也盯盘</span>'
+      : '')
+    + `起始 $${fmt(ST.account.start,0)} ｜ 累计 <span class="${chg>=0?'up':'down'}">${chg>=0?'+':''}${fmt(chg*100)}%</span> ｜ 手续费 -$${fmt(fees)} ｜ 浮动 ${upnl>=0?'+':''}${fmt(upnl)}`;
   $('riskPct').value = ST.account.riskPct;
   $('maxPos').value = ST.account.maxPos;
   $('leverage').value = ST.account.leverage;
@@ -1848,6 +1897,14 @@ function ask(raw){
     <br><span class="muted">投资建议类的问题（该不该买、会不会涨）我不回答。</span>`;
 }
 function saveConfig(){
+  if(SERVER){
+    const cfg = { riskPct:+$('riskPct').value||1, maxPos:+$('maxPos').value||3, leverage:+$('leverage').value||20, feeBps:+$('feeBps').value };
+    postJSON('/api/config', cfg)
+      .then(()=>refreshState())
+      .then(()=>{ msg('配置已保存（服务端）'); render(); })
+      .catch(e=>msg('配置保存失败：'+e.message));
+    return;
+  }
   const old = Object.assign({}, ST.account);
   ST.account.riskPct = +$('riskPct').value || 1;
   ST.account.maxPos = +$('maxPos').value || 3;
@@ -1858,6 +1915,16 @@ function saveConfig(){
   msg('配置已保存'); render();
 }
 async function openPos(side){
+  if(SERVER){
+    try{
+      msg('提交中…');
+      const r = await postJSON('/api/open', { sym:SYM, side });
+      await refreshState();
+      msg(`已开${side==='long'?'多':'空'} ${SYM} ${r.position.qty} @ ${fmt(r.position.entry)}｜止损 ${fmt(r.position.stop)}｜${r.position.leverage}x${r.warning?'｜⚠️ '+r.warning:''}`);
+      render(); drawLines();
+    }catch(e){ msg('开仓失败：'+e.message); }
+    return;
+  }
   try{
     PX = await prices();
     const px = PX[SYM]; if(!isFinite(px)) throw new Error('取不到价格');
@@ -1873,6 +1940,14 @@ async function openPos(side){
   }catch(e){ msg('开仓失败：'+e.message); }
 }
 async function doClose(id){
+  if(SERVER){
+    try{
+      const r = await postJSON('/api/close', { id });
+      await refreshState();
+      msg('已平仓，盈亏 '+fmt(r.pnl)); render(); drawLines(); loadChart();
+    }catch(e){ msg('平仓失败：'+e.message); }
+    return;
+  }
   try{
     PX = await prices();
     const p = ST.positions.find(x=>x.id===id);
@@ -1891,6 +1966,23 @@ async function fillOrderPrice(){
 async function placeOrder(side){
   const price = +$('ordPrice').value;
   if(!price) return msg('先填挂价');
+  if(SERVER){
+    const stopRaw = $('ordStop').value;
+    const levRaw = $('ordLev').value;
+    try{
+      await postJSON('/api/order', {
+        sym:SYM, side, price,
+        stop: stopRaw==='' ? null : +stopRaw,
+        targetR: +$('ordR').value||3,
+        ttlHours: $('ordTtl').value==='' ? 24 : +$('ordTtl').value,
+        leverage: levRaw==='' ? null : +levRaw,
+      });
+      await refreshState();
+      render(); drawLines();
+      msg(`已挂${side==='long'?'多':'空'}单 ${SYM} @ ${fmt(price)}（服务端）`);
+    }catch(e){ msg('挂单失败：'+e.message); }
+    return;
+  }
   PX = await prices();
   const cur = PX[SYM];
   if(!isFinite(cur)) return msg('取不到现价');
@@ -1920,6 +2012,13 @@ async function placeOrder(side){
   msg(`已挂${side==='long'?'多':'空'}单 ${SYM} @ ${fmt(price)}｜止损 ${stop?fmt(stop):'成交时按 ATR'}｜杠杆 ${leverage?leverage+'x':'默认'}｜${targetR}R`);
 }
 function cancelOrder(id){
+  if(SERVER){
+    postJSON('/api/order/cancel', { id })
+      .then(()=>refreshState())
+      .then(()=>{ render(); drawLines(); msg('已撤单（服务端）'); })
+      .catch(e=>msg('撤单失败：'+e.message));
+    return;
+  }
   const i = ST.orders.findIndex(o=>o.id===id);
   if(i<0) return msg('找不到挂单');
   const [o] = ST.orders.splice(i,1);
@@ -1929,6 +2028,11 @@ function cancelOrder(id){
 }
 function resetAccount(){
   if(!confirm('重置账户？持仓、挂单、历史都会清空')) return;
+  if(SERVER){
+    postJSON('/api/reset', {}).then(()=>refreshState()).then(()=>{ render(); drawLines(); loadChart(); msg('已重置（服务端）'); })
+      .catch(e=>msg('重置失败：'+e.message));
+    return;
+  }
   ST = Core.freshState(); saveState(); render(); drawLines(); loadChart(); msg('已重置');
 }
 function exportData(){
@@ -1972,14 +2076,21 @@ function buildTabs(){
 async function loop(){
   try{
     PX = await prices();
-    await tickOrders();
-    await tickExits();
+    if(SERVER){
+      // 服务端在后台撮合，前端定期把账本拉回来（含服务端刚成交的单）
+      try{ await refreshState(); }catch{}
+    } else {
+      await tickOrders();
+      await tickExits();
+    }
     render(); drawLines();
   }catch(e){ console.warn(e); }
-  setTimeout(loop, 5000);
+  setTimeout(loop, SERVER ? 8000 : 5000);
 }
-document.addEventListener('DOMContentLoaded', ()=>{
+document.addEventListener('DOMContentLoaded', async ()=>{
+  await detectServer();     // 有 /api 就切服务端模式；没有就走 localStorage，线上行为不变
   buildTabs(); initChart(); render(); chipInit();
+  if(SERVER) showMode();
   if(CORRUPT_NOTICE) msg(CORRUPT_NOTICE); // 弹窗可能被浏览器拦掉，页面上再留一份
   $('btnLong').onclick = ()=>openPos('long');
   $('btnShort').onclick = ()=>openPos('short');
