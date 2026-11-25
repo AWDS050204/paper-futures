@@ -1391,6 +1391,13 @@ function exportData(){
 }
 function importData(input){
   const f = input.files[0]; if(!f) return;
+  // 服务端模式下账本在服务端，导入只改本地 ST 会被下一次 refreshState 覆盖掉
+  // —— 表现为「提示已导入，但 8 秒后自己还原」。这里直接拒绝，别假装成功。
+  if(SERVER){
+    input.value = '';
+    msg('服务端模式不支持导入：账本在服务端（trading/paper.json）。要换账本请直接替换那个文件后重启服务。');
+    return;
+  }
   const rd = new FileReader();
   rd.onload = ()=>{ try{
     const s = JSON.parse(rd.result);
