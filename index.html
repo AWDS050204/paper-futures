@@ -1072,7 +1072,7 @@ function ask(raw){
       const stopFirst = p.side==='long' ? p.stop>p.liq : p.stop<p.liq;
       return `<b>${p.sym.replace('USDT','')} ${p.side==='long'?'多':'空'}</b>：强平 <b class="down">${fmt(p.liq)}</b>` +
         (d!=null ? `，现价 ${fmt(cur)}，还差 <b>${fmt(d)}%</b>（${p.leverage}x）` : '') +
-        `<br><span class="muted">止损在 ${fmt(p.stop)}，止损比强平更近 → ${stopFirst?'先触碰止损':'先爆仓'}。</span>`;
+        `<br><span class="muted">止损在 ${fmt(p.stop)}，${stopFirst?'止损比强平更近 → 先触碰止损':'强平比止损更近 → 先爆仓'}。</span>`;
     }).join('<br><br>');
   }
 
