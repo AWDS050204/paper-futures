@@ -332,7 +332,7 @@
   T('：强平 <b class="down">{}</b>', ': liquidation <b class="down">$1</b>');
   T('，现价 {}，还差 <b>{}%</b>（{}x）', ', last $1, <b>$2%</b> away ($3x)');
   T('<br><span class="muted">止损在 {}，止损比强平更近 → 先触碰止损。</span>', '<br><span class="muted">Stop at $1; the stop is closer than liquidation → the stop is hit first.</span>');
-  T('<br><span class="muted">止损在 {}，止损比强平更近 → 先爆仓。</span>', '<br><span class="muted">Stop at $1; the stop is closer than liquidation → liquidation comes first.</span>');
+  T('<br><span class="muted">止损在 {}，强平比止损更近 → 先爆仓。</span>', '<br><span class="muted">Stop at $1; liquidation is closer than the stop → liquidation comes first.</span>');
   T('<b>{}</b>：入场 {} → 止损 <b class="down">{}</b><br>距离 {}，占入场 <b>{}%</b>', '<b>$1</b>: entry $2 → stop <b class="down">$3</b><br>distance $4, <b>$5%</b> of entry');
   T('，等于 <b>{}×ATR</b>（日线 ATR {}）', ', equal to <b>$1×ATR</b> (daily ATR $2)');
   T('<br><span class="muted">按 1R = {} 美元反推，数量 {}。</span>', '<br><span class="muted">Sized back from 1R = $$$1, quantity $2.</span>');
